@@ -140,6 +140,12 @@ export function mapDbCourseToMockFormat(c) {
     level: levelVal,
     trailerUrl: (c.level && (c.level.startsWith('http') || c.level.startsWith('/'))) ? c.level : null,
     grade: c.grade,
+    status: c.status,
+    visibility: c.visibility,
+    isApproved: c.isApproved,
+    isPublished: c.isPublished,
+    rejectedReason: c.rejectedReason,
+    lessons: c.lessons || [],
     curriculum: curriculumVal.map(c => ({
       ...c,
       title: c.title

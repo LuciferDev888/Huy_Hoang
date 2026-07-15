@@ -36,6 +36,7 @@ import {
   HiChevronRight
 } from 'react-icons/hi';
 import { api } from '../api';
+import { mapDbCourseToMockFormat } from '../utils/courseMapper';
 import '../styles/teacherDashboard.css';
 
 export default function TeacherDashboard({
@@ -49,7 +50,8 @@ export default function TeacherDashboard({
   addLog,
   activeTab: propActiveTab = 'overview',
   setActiveTab,
-  onUpdateUser
+  onUpdateUser,
+  navigateTo
 }) {
   // --- SUB TAB SYSTEM ---
   const [localTab, setLocalTab] = useState(() => {
@@ -80,6 +82,7 @@ export default function TeacherDashboard({
   // --- DATABASE DRIVEN STATES ---
   const [dbStats, setDbStats] = useState(null);
   const [loadingStats, setLoadingStats] = useState(true);
+  const [showNotifDropdown, setShowNotifDropdown] = useState(false);
 
   const loadTeacherStats = async () => {
     try {
@@ -120,9 +123,7 @@ export default function TeacherDashboard({
   };
 
   // Sync props
-  useEffect(() => {
-    if (initialCourses) setCourses(initialCourses);
-  }, [initialCourses]);
+  // We do not sync initialCourses here because it contains public courses, while the teacher needs their specific courses.
 
   useEffect(() => {
     if (initialQuestionBank) setQuestionBank(initialQuestionBank);
@@ -169,6 +170,8 @@ export default function TeacherDashboard({
   const [cIsPublished, setCIsPublished] = useState(false);
   const [cThumbnailUploading, setCThumbnailUploading] = useState(false);
   const [cTrailerUploading, setCTrailerUploading] = useState(false);
+  const [courseStatusFilter, setCourseStatusFilter] = useState('ALL'); // ALL | PENDING | APPROVED | REJECTED | HIDDEN
+  const [examStatusFilter, setExamStatusFilter] = useState('ALL'); // ALL | PENDING | PUBLISHED | REJECTED | HIDDEN
 
   // --- LESSONS CRUD STATES ---
   const [lessonEditMode, setLessonEditMode] = useState('idle'); // idle, create, edit
@@ -184,7 +187,8 @@ export default function TeacherDashboard({
     try {
       const data = await api.getCourses({ teacherId: currentUser.id });
       if (data) {
-        setCourses(data);
+        const mapped = data.map(c => mapDbCourseToMockFormat(c));
+        setCourses(mapped);
       }
     } catch (err) {
       console.error('Failed to load teacher courses:', err);
@@ -233,13 +237,12 @@ export default function TeacherDashboard({
         discount: Number(cDiscount),
         thumbnailUrl: cThumbnailUrl,
         level: cTrailerUrl,
-        grade: Number(cGrade),
-        isPublished: cIsPublished
+        grade: Number(cGrade)
       };
 
       if (courseEditMode === 'create') {
         const res = await api.createCourse(payload);
-        toast(`Tạo khóa học "${res.title}" thành công!`, 'success');
+        toast(`Tạo khóa học "${res.title}" thành công! Đang chờ Admin phê duyệt trước khi hiển thị cho học sinh.`, 'success');
         if (onCreateCourse) onCreateCourse(res);
       } else {
         const res = await api.updateCourse(selectedCourseId, payload);
@@ -485,6 +488,7 @@ export default function TeacherDashboard({
   const [formPrice, setFormPrice] = useState('0');
   const [formIsPublic, setFormIsPublic] = useState(true);
   const [uploadingMaterial, setUploadingMaterial] = useState(false);
+  const [editingMaterial, setEditingMaterial] = useState(null);
   const materialFileInputRef = useRef(null);
 
   const loadTeacherMaterials = async () => {
@@ -614,55 +618,95 @@ export default function TeacherDashboard({
     toast(`Tạo lớp học ${newClassName} (${newClassId.toUpperCase()}) thành công!`, 'success');
   };
 
-  const handleUploadMaterialReal = async (e) => {
-    e.preventDefault();
-    const file = materialFileInputRef.current?.files?.[0];
-    if (!file) {
-      toast('Vui lòng chọn tệp tài liệu để tải lên!', 'warning');
-      return;
-    }
-
-    try {
-      setUploadingMaterial(true);
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('title', formTitle);
-      formData.append('description', formDescription);
-      formData.append('subject', formSubject);
-      formData.append('grade', formGrade);
-      formData.append('price', formPrice);
-      formData.append('isPublic', formIsPublic ? 'true' : 'false');
-
-      await api.createTeacherMaterial(formData);
-      toast('Tải lên tài liệu thành công!', 'success');
-      
-      // Reset form
-      setFormTitle('');
-      setFormDescription('');
-      setFormPrice('0');
-      if (materialFileInputRef.current) {
-        materialFileInputRef.current.value = '';
-      }
-
-      // Reload materials
-      await loadTeacherMaterials();
-      await loadTeacherStats();
-    } catch (err) {
-      console.error('[Upload Material Error]', err);
-      toast(err.message || 'Tải lên tài liệu thất bại!', 'error');
-    } finally {
-      setUploadingMaterial(false);
+  const resetMaterialForm = () => {
+    setEditingMaterial(null);
+    setFormTitle('');
+    setFormDescription('');
+    setFormPrice('0');
+    setFormIsPublic(true);
+    if (materialFileInputRef.current) {
+      materialFileInputRef.current.value = '';
     }
   };
 
-  const handleToggleMaterialPublic = async (id, isPublic) => {
+  const handleUploadMaterialReal = async (e) => {
+    e.preventDefault();
+
+    if (!editingMaterial) {
+      // Create mode
+      const file = materialFileInputRef.current?.files?.[0];
+      if (!file) {
+        toast('Vui lòng chọn tệp tài liệu để tải lên!', 'warning');
+        return;
+      }
+
+      // Kiểm tra phần mở rộng tệp tin
+      const allowedExtensions = ['.pdf', '.doc', '.docx'];
+      const fileExt = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+      if (!allowedExtensions.includes(fileExt)) {
+        toast('Định dạng tệp không hợp lệ! Chỉ chấp nhận các định dạng PDF, DOC, DOCX.', 'error');
+        return;
+      }
+
+      try {
+        setUploadingMaterial(true);
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('title', formTitle);
+        formData.append('description', formDescription);
+        formData.append('subject', formSubject);
+        formData.append('grade', formGrade);
+        formData.append('price', formPrice);
+        formData.append('status', formIsPublic ? 'PENDING_REVIEW' : 'DRAFT');
+
+        await api.createTeacherMaterial(formData);
+        toast('Tải lên tài liệu thành công!', 'success');
+        
+        resetMaterialForm();
+        await loadTeacherMaterials();
+        await loadTeacherStats();
+      } catch (err) {
+        console.error('[Upload Material Error]', err);
+        toast(err.message || 'Tải lên tài liệu thất bại!', 'error');
+      } finally {
+        setUploadingMaterial(false);
+      }
+    } else {
+      // Edit mode
+      try {
+        setUploadingMaterial(true);
+        const payload = {
+          title: formTitle,
+          description: formDescription,
+          subject: formSubject,
+          grade: formGrade,
+          price: Number(formPrice),
+          status: formIsPublic ? 'PENDING_REVIEW' : 'DRAFT'
+        };
+
+        await api.updateTeacherMaterial(editingMaterial.id, payload);
+        toast('Cập nhật thông tin tài liệu thành công!', 'success');
+        
+        resetMaterialForm();
+        await loadTeacherMaterials();
+        await loadTeacherStats();
+      } catch (err) {
+        console.error('[Update Material Error]', err);
+        toast(err.message || 'Cập nhật tài liệu thất bại!', 'error');
+      } finally {
+        setUploadingMaterial(false);
+      }
+    }
+  };
+
+  const handleSendForReview = async (id) => {
     try {
-      await api.updateTeacherMaterial(id, { isPublic });
-      toast(isPublic ? 'Đã công khai tài liệu!' : 'Đã chuyển tài liệu sang chế độ nháp!', 'success');
+      await api.submitTeacherMaterial(id);
+      toast('Đã gửi yêu cầu phê duyệt tài liệu!', 'success');
       await loadTeacherMaterials();
     } catch (err) {
-      console.error('[Toggle Public Error]', err);
-      toast('Không thể thay đổi trạng thái tài liệu!', 'error');
+      console.error('[Send Review Error]', err);
+      toast('Không thể gửi yêu cầu phê duyệt!', 'error');
     }
   };
 
@@ -679,6 +723,61 @@ export default function TeacherDashboard({
     }
   };
 
+  const [expandedReviewsId, setExpandedReviewsId] = useState(null);
+  const [reviewsLoading, setReviewsLoading] = useState(false);
+  const [materialReviews, setMaterialReviews] = useState([]);
+
+  const handleToggleReviews = async (material) => {
+    if (expandedReviewsId === material.id) {
+      setExpandedReviewsId(null);
+      setMaterialReviews([]);
+      return;
+    }
+
+    if (!material.documentResourceId) {
+      toast('Tài liệu chưa được duyệt hoặc chưa được đồng bộ để xem đánh giá!', 'warning');
+      return;
+    }
+
+    try {
+      setReviewsLoading(true);
+      setExpandedReviewsId(material.id);
+      const res = await api.getDocumentRatings(material.documentResourceId);
+      if (res && res.ratings) {
+        setMaterialReviews(res.ratings);
+      }
+    } catch (err) {
+      console.error('[Load Reviews Error]', err);
+      toast('Không thể tải danh sách đánh giá!', 'error');
+    } finally {
+      setReviewsLoading(false);
+    }
+  };
+
+  const handleHideReview = async (reviewId, currentHidden) => {
+    try {
+      const reason = currentHidden ? '' : prompt('Nhập lý do ẩn nhận xét này:');
+      if (!currentHidden && reason === null) return; // User cancelled
+      
+      await api.hideDocumentRating(reviewId, reason || 'Ẩn bởi giáo viên', !currentHidden);
+      toast(currentHidden ? 'Đã hiển thị lại nhận xét!' : 'Đã ẩn nhận xét thành công!', 'success');
+      
+      // Refresh reviews list
+      if (expandedReviewsId) {
+        const material = teacherMaterials.find(m => m.id === expandedReviewsId);
+        if (material) {
+          const res = await api.getDocumentRatings(material.documentResourceId);
+          if (res && res.ratings) {
+            setMaterialReviews(res.ratings);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[Hide Review Error]', err);
+      toast(err.message || 'Thao tác thất bại!', 'error');
+    }
+  };
+
   // --- HANDLERS ---
   const fileInputRef = useRef(null);
 
@@ -691,8 +790,8 @@ export default function TeacherDashboard({
         try {
           const json = JSON.parse(evt.target.result);
           const imported = await api.importExam(json);
-          toast(`Nhập đề thi "${imported.title}" thành công! Trạng thái: Chờ duyệt.`, 'success');
-          addLog(`Nhập đề thi mới: ${imported.title}`, 'sys');
+          toast(`Nhập đề thi "${json.title}" thành công! Trạng thái: Chờ duyệt.`, 'success');
+          addLog(`Nhập đề thi mới: ${json.title}`, 'sys');
           loadExamsList();
         } catch (err) {
           toast(`Lỗi import: ${err.message}`, 'error');
@@ -704,20 +803,9 @@ export default function TeacherDashboard({
     }
   };
 
-  const handleApproveExam = async (examId) => {
-    try {
-      await api.updateExamStatus(examId, 'published');
-      toast('Phê duyệt đề thi thành công! Đề thi đã được phát hành tới học sinh.', 'success');
-      addLog(`Phê duyệt đề thi ID #${examId}`, 'sys');
-      loadExamsList();
-    } catch (err) {
-      toast(`Lỗi phê duyệt: ${err.message}`, 'error');
-    }
-  };
-
   const loadExamsList = async () => {
     try {
-      const data = await api.getExams();
+      const data = await api.getExams({ teacherId: currentUser?.id });
       if (data && data.length > 0) {
         const mapped = data.map(e => ({
           id: e.id,
@@ -729,7 +817,9 @@ export default function TeacherDashboard({
           avgScore: e.attempts && e.attempts.length > 0 ? Number((e.attempts.reduce((acc, a) => acc + (a.score || 0), 0) / e.attempts.length).toFixed(1)) : 0,
           maxScore: e.attempts && e.attempts.length > 0 ? Number(Math.max(...e.attempts.map(a => a.score || 0)).toFixed(1)) : 0,
           status: e.status || 'published',
-          grade: e.grade
+          grade: e.grade,
+          rejectedReason: e.rejectedReason,
+          hiddenReason: e.hiddenReason
         }));
         setExams(mapped);
       } else {
@@ -957,7 +1047,11 @@ export default function TeacherDashboard({
     <div className="teacher-dashboard-layout">
       {/* LEFT SIDEBAR */}
       <aside className="tdb-left-sidebar">
-        <div className="tdb-logo-section" style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div 
+          className="tdb-logo-section" 
+          style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}
+          onClick={() => navigateTo('/')}
+        >
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <img src={sunLogoImg} alt="EduPath AI" style={{ width: '36px', height: '36px', objectFit: 'contain' }} />
           </div>
@@ -1092,14 +1186,189 @@ export default function TeacherDashboard({
             </div>
 
             {/* Notification Bell Icon */}
-            <button 
-              className="tdb-action-icon-btn" 
-              onClick={() => handleTabChange('notifications')}
-              title="Thông báo mới"
-            >
-              <HiBell />
-              {essays.length > 0 && <span className="tdb-icon-badge">{essays.length}</span>}
-            </button>
+            <div style={{ position: 'relative' }}>
+              <button 
+                className="tdb-action-icon-btn" 
+                onClick={() => setShowNotifDropdown(!showNotifDropdown)}
+                title="Thông báo mới"
+              >
+                <HiBell />
+                {(dbStats?.notifications?.filter(n => !n.read && !n.isRead).length || 0) > 0 && (
+                  <span className="tdb-icon-badge">
+                    {dbStats.notifications.filter(n => !n.read && !n.isRead).length}
+                  </span>
+                )}
+              </button>
+
+              {/* Notifications Dropdown Menu */}
+              {showNotifDropdown && (
+                <>
+                  <div
+                    onClick={() => setShowNotifDropdown(false)}
+                    style={{
+                      position: 'fixed',
+                      top: 0, left: 0, right: 0, bottom: 0,
+                      zIndex: 998
+                    }}
+                  />
+                  <div
+                    className="lp-dropdown-menu animate-in"
+                    style={{
+                      position: 'absolute',
+                      top: '50px',
+                      right: 0,
+                      width: '420px',
+                      background: '#ffffff',
+                      borderRadius: '14px',
+                      boxShadow: '0 10px 30px rgba(0,0,0,0.15)',
+                      border: '1px solid #e2e8f0',
+                      padding: '20px',
+                      zIndex: 999,
+                      textAlign: 'left'
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', borderBottom: '1px solid #f1f5f9', paddingBottom: '10px' }}>
+                      <span style={{ fontSize: '14px', fontWeight: '850', color: '#1e293b' }}>
+                        🔔 THÔNG BÁO ({dbStats?.notifications?.filter(n => !n.read && !n.isRead).length || 0})
+                      </span>
+                      {dbStats?.notifications && dbStats.notifications.length > 0 && (
+                        <button
+                          onClick={() => {
+                            api.markAllNotificationsAsRead().then(() => {
+                              setDbStats(prev => {
+                                if (!prev) return prev;
+                                return {
+                                  ...prev,
+                                  notifications: prev.notifications.map(n => ({ ...n, read: true, isRead: true }))
+                                };
+                              });
+                            }).catch(console.error);
+                          }}
+                          style={{ background: 'none', border: 'none', color: '#6c5ce7', fontSize: '13px', cursor: 'pointer', fontWeight: '700' }}
+                        >
+                          Đọc tất cả
+                        </button>
+                      )}
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '380px', overflowY: 'auto', paddingRight: '4px' }}>
+                      {dbStats?.notifications && dbStats.notifications.length > 0 ? (
+                        dbStats.notifications.slice(0, 5).map((n) => {
+                          const icon = n.icon || (n.type === 'SUCCESS' ? '✅' : n.type === 'WARNING' ? '⚠️' : n.type === 'ERROR' ? '❌' : '🔔');
+                          const borderLeftColor = n.type === 'SUCCESS' ? '#10B981' : n.type === 'WARNING' ? '#F59E0B' : n.type === 'ERROR' ? '#EF4444' : '#6c5ce7';
+                          const isReadNotif = n.read || n.isRead;
+
+                          return (
+                            <div
+                              key={n.id}
+                              onClick={() => {
+                                if (!isReadNotif) {
+                                  api.markNotificationAsRead(n.id).then(() => {
+                                    setDbStats(prev => {
+                                      if (!prev) return prev;
+                                      return {
+                                        ...prev,
+                                        notifications: prev.notifications.map(item => item.id === n.id ? { ...item, read: true, isRead: true } : item)
+                                      };
+                                    });
+                                  }).catch(console.error);
+                                }
+                                setShowNotifDropdown(false);
+                                handleTabChange('notifications');
+                              }}
+                              style={{
+                                padding: '12px 16px', borderRadius: '12px',
+                                background: isReadNotif ? 'transparent' : 'rgba(108, 92, 231, 0.04)',
+                                border: '1px solid #e2e8f0',
+                                borderLeft: `5px solid ${borderLeftColor}`,
+                                fontSize: '13px', lineHeight: '1.45',
+                                cursor: 'pointer',
+                                transition: 'all 0.15s ease',
+                                display: 'flex', gap: '12px', alignItems: 'flex-start'
+                              }}
+                            >
+                              <div style={{ fontSize: '18px', marginTop: '2px' }}>{icon}</div>
+                              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+                                <div style={{ fontWeight: '750', color: '#1e293b', fontSize: '13.5px', marginBottom: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{n.title || 'Thông báo'}</div>
+                                <p style={{ color: '#64748b', margin: 0, fontSize: '12.5px', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{n.text || n.message}</p>
+                                {n.link && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (!isReadNotif) {
+                                        api.markNotificationAsRead(n.id).then(() => {
+                                          setDbStats(prev => {
+                                            if (!prev) return prev;
+                                            return {
+                                              ...prev,
+                                              notifications: prev.notifications.map(item => item.id === n.id ? { ...item, read: true, isRead: true } : item)
+                                            };
+                                          });
+                                        }).catch(console.error);
+                                      }
+                                      setShowNotifDropdown(false);
+                                      if (navigateTo) navigateTo(n.link);
+                                    }}
+                                    style={{
+                                      marginTop: '10px',
+                                      padding: '6px 12px',
+                                      borderRadius: '8px',
+                                      background: borderLeftColor,
+                                      color: '#FFFFFF',
+                                      border: '1.5px solid #000000',
+                                      boxShadow: '1.5px 1.5px 0px #000000',
+                                      fontSize: '11px',
+                                      fontWeight: 'bold',
+                                      cursor: 'pointer',
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '4px',
+                                      transition: 'all 0.1s ease',
+                                    }}
+                                    onMouseEnter={(e) => {
+                                      e.currentTarget.style.transform = 'translate(-1px, -1px)';
+                                      e.currentTarget.style.boxShadow = '2.5px 2.5px 0px #000000';
+                                    }}
+                                    onMouseLeave={(e) => {
+                                      e.currentTarget.style.transform = 'none';
+                                      e.currentTarget.style.boxShadow = '1.5px 1.5px 0px #000000';
+                                    }}
+                                  >
+                                    {n.category === 'COURSE' && 'Vào học ngay 🚀'}
+                                    {n.category === 'EXAM' && 'Luyện tập ngay 📝'}
+                                    {n.category === 'PAYMENT' && 'Xem chi tiết 🧾'}
+                                    {n.category === 'TEACHER' && 'Xem lớp học 👨‍🏫'}
+                                    {n.category === 'AI' && 'Khám phá AI 🤖'}
+                                    {!['COURSE', 'EXAM', 'PAYMENT', 'TEACHER', 'AI'].includes(n.category) && 'Xem chi tiết ➔'}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <p style={{ fontSize: '13px', color: '#64748b', textAlign: 'center', padding: '24px 0', fontWeight: '500' }}>Không có thông báo mới.</p>
+                      )}
+                    </div>
+
+                    <div style={{ marginTop: '14px', borderTop: '1px solid #f1f5f9', paddingTop: '12px', textAlign: 'center' }}>
+                      <button
+                        onClick={() => {
+                          setShowNotifDropdown(false);
+                          handleTabChange('notifications');
+                        }}
+                        style={{
+                          background: 'none', border: 'none', color: '#6c5ce7',
+                          fontSize: '13.5px', fontWeight: '700', cursor: 'pointer'
+                        }}
+                      >
+                        Xem tất cả thông báo ➔
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
 
             {/* Profile Avatar & Info */}
             <div className="tdb-header-user">
@@ -1287,17 +1556,71 @@ export default function TeacherDashboard({
                 </div>
                 <div className="tdb-notif-list">
                   {dbStats?.notifications && dbStats.notifications.length > 0 ? (
-                    dbStats.notifications.slice(0, 5).map((notif) => (
-                      <div key={notif.id} className="tdb-notif-item animate-in">
-                        <span className="tdb-notif-icon-dot orange">🔔</span>
-                        <div className="tdb-notif-body">
-                          <p className="tdb-notif-text">{notif.message}</p>
-                          <span className="tdb-notif-time">
-                            {new Date(notif.createdAt).toLocaleDateString('vi-VN')}
-                          </span>
+                    dbStats.notifications.slice(0, 5).map((notif) => {
+                      const isReadNotif = notif.read || notif.isRead;
+                      const btnColor = notif.type === 'SUCCESS' ? '#10B981' : notif.type === 'WARNING' ? '#F59E0B' : notif.type === 'ERROR' ? '#EF4444' : '#6c5ce7';
+                      return (
+                        <div key={notif.id} className="tdb-notif-item animate-in" style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+                          <span className="tdb-notif-icon-dot orange">🔔</span>
+                          <div className="tdb-notif-body" style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+                            <p className="tdb-notif-text" style={{ margin: 0 }}>{notif.message}</p>
+                            {notif.link && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (!isReadNotif) {
+                                    api.markNotificationAsRead(notif.id).then(() => {
+                                      setDbStats(prev => {
+                                        if (!prev) return prev;
+                                        return {
+                                          ...prev,
+                                          notifications: prev.notifications.map(item => item.id === notif.id ? { ...item, read: true, isRead: true } : item)
+                                        };
+                                      });
+                                    }).catch(console.error);
+                                  }
+                                  if (navigateTo) navigateTo(notif.link);
+                                }}
+                                style={{
+                                  marginTop: '8px',
+                                  padding: '5px 10px',
+                                  borderRadius: '6px',
+                                  background: btnColor,
+                                  color: '#FFFFFF',
+                                  border: '1.5px solid #000000',
+                                  boxShadow: '1px 1px 0px #000000',
+                                  fontSize: '10.5px',
+                                  fontWeight: 'bold',
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                  transition: 'all 0.1s ease',
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.transform = 'translate(-1px, -1px)';
+                                  e.currentTarget.style.boxShadow = '2px 2px 0px #000000';
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.transform = 'none';
+                                  e.currentTarget.style.boxShadow = '1px 1px 0px #000000';
+                                }}
+                              >
+                                {notif.category === 'COURSE' && 'Vào học ngay 🚀'}
+                                {notif.category === 'EXAM' && 'Luyện tập ngay 📝'}
+                                {notif.category === 'PAYMENT' && 'Xem chi tiết 🧾'}
+                                {notif.category === 'TEACHER' && 'Xem lớp học 👨‍🏫'}
+                                {notif.category === 'AI' && 'Khám phá AI 🤖'}
+                                {!['COURSE', 'EXAM', 'PAYMENT', 'TEACHER', 'AI'].includes(notif.category) && 'Xem chi tiết ➔'}
+                              </button>
+                            )}
+                            <span className="tdb-notif-time" style={{ marginTop: '4px' }}>
+                              {new Date(notif.createdAt).toLocaleDateString('vi-VN')}
+                            </span>
+                          </div>
                         </div>
-                      </div>
-                    ))
+                      );
+                    })
                   ) : (
                     <>
                       <div className="tdb-notif-item">
@@ -1709,22 +2032,32 @@ export default function TeacherDashboard({
                       </div>
                     </div>
 
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontWeight: 'bold', color: '#1e293b', marginTop: '8px', background: '#fff', padding: '10px 14px', borderRadius: '10px', border: '2px solid #000000' }}>
-                      <input 
-                        type="checkbox" 
-                        checked={cIsPublished}
-                        onChange={e => setCIsPublished(e.target.checked)}
-                        style={{ width: '18px', height: '18px', cursor: 'pointer' }}
-                      />
-                      Đăng bán khóa học này (Công khai)
-                    </label>
+                    {/* Approval flow info notice */}
+                    <div style={{
+                      background: '#eff6ff',
+                      border: '2px solid #000',
+                      borderRadius: '10px',
+                      padding: '12px 16px',
+                      marginTop: '4px',
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: '10px'
+                    }}>
+                      <span style={{ fontSize: '20px', flexShrink: 0 }}>ℹ️</span>
+                      <div>
+                        <p style={{ margin: '0 0 4px 0', fontSize: '12.5px', fontWeight: '800', color: '#1e40af' }}>Quy trình phê duyệt khóa học</p>
+                        <p style={{ margin: 0, fontSize: '11.5px', color: '#1e3a8a', lineHeight: '1.5' }}>
+                          Sau khi lưu, khóa học sẽ vào trạng thái <strong>Chờ duyệt (PENDING)</strong>. Admin sẽ xem xét nội dung và phê duyệt trước khi khóa học hiện lên cho học sinh.
+                        </p>
+                      </div>
+                    </div>
 
                     <button 
                       type="submit" 
                       className="tdb-upgrade-btn"
                       style={{ background: '#6366f1', color: '#fff', border: '2px solid #000', boxShadow: '3px 3px 0px #000', fontWeight: 'bold', fontSize: '13px', padding: '12px 14px', marginTop: '10px' }}
                     >
-                      💾 Lưu thông tin khóa học
+                      {courseEditMode === 'create' ? '📤 Tạo và gửi duyệt' : '💾 Lưu thay đổi'}
                     </button>
                   </div>
                 </form>
@@ -1809,25 +2142,45 @@ export default function TeacherDashboard({
                                           </button>
                                         </div>
                                       ) : (
-                                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                                          <span style={{ fontSize: '24px' }}>🎥</span>
-                                          <span style={{ fontSize: '10px', color: '#64748b', fontWeight: '600', margin: '2px 0 6px 0' }}>Hỗ trợ MP4, MOV (Tối đa 50MB)</span>
-                                          <button 
-                                            type="button" 
-                                            disabled={lVideoUploading}
-                                            onClick={() => document.getElementById('course-trailer-upload-inline').click()}
-                                            className="tdb-upgrade-btn"
-                                            style={{ width: 'auto', background: '#fff', color: '#000', border: '2px solid #000', padding: '4px 10px', fontSize: '11px', boxShadow: 'none' }}
-                                          >
-                                            {lVideoUploading ? '⏳ Đang tải...' : 'Tải video từ máy'}
-                                          </button>
-                                          <input 
-                                            type="file" 
-                                            id="course-trailer-upload-inline" 
-                                            accept="video/mp4,video/quicktime" 
-                                            onChange={handleLessonVideoChange} 
-                                            style={{ display: 'none' }} 
-                                          />
+                                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%', gap: '8px' }}>
+                                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                                            <span style={{ fontSize: '24px' }}>🎥</span>
+                                            <span style={{ fontSize: '10px', color: '#64748b', fontWeight: '600', margin: '2px 0 6px 0' }}>Tải lên tệp video MP4, MOV (Tối đa 50MB)</span>
+                                            <button 
+                                              type="button" 
+                                              disabled={lVideoUploading}
+                                              onClick={() => document.getElementById('course-trailer-upload-inline').click()}
+                                              className="tdb-upgrade-btn"
+                                              style={{ width: 'auto', background: '#fff', color: '#000', border: '2px solid #000', padding: '4px 10px', fontSize: '11px', boxShadow: 'none' }}
+                                            >
+                                              {lVideoUploading ? '⏳ Đang tải...' : 'Tải video từ máy'}
+                                            </button>
+                                            <input 
+                                              type="file" 
+                                              id="course-trailer-upload-inline" 
+                                              accept="video/mp4,video/quicktime" 
+                                              onChange={handleLessonVideoChange} 
+                                              style={{ display: 'none' }} 
+                                            />
+                                          </div>
+                                          
+                                          <div style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '8px', margin: '8px 0' }}>
+                                            <div style={{ flex: 1, height: '1px', background: '#cbd5e1' }} />
+                                            <span style={{ fontSize: '10px', color: '#64748b', fontWeight: 'bold' }}>HOẶC</span>
+                                            <div style={{ flex: 1, height: '1px', background: '#cbd5e1' }} />
+                                          </div>
+
+                                          <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '4px', textAlign: 'left' }}>
+                                            <span style={{ fontSize: '11px', fontWeight: 'bold' }}>Đường dẫn Video Youtube:</span>
+                                            <input 
+                                              type="text" 
+                                              className="tdb-search-input" 
+                                              style={{ width: '100%', borderRadius: '8px', border: '1.5px solid #000', padding: '6px', boxSizing: 'border-box' }} 
+                                              placeholder="Ví dụ: https://www.youtube.com/watch?v=..."
+                                              value={lVideoUrl}
+                                              onChange={e => setLVideoUrl(e.target.value)}
+                                            />
+                                          </div>
                                         </div>
                                       )}
                                     </div>
@@ -1895,15 +2248,37 @@ export default function TeacherDashboard({
                                       display: 'flex', justifyContent: 'space-between', alignItems: 'center'
                                     }}
                                   >
-                                    <div style={{ textAlign: 'left' }}>
+                                    <div style={{ textAlign: 'left', flex: 1, marginRight: '16px' }}>
                                       <span style={{ fontSize: '12.5px', fontWeight: '800', color: '#0f172a', display: 'block' }}>
                                         {idx + 1}. {lesson.name || lesson.title}
                                       </span>
-                                      <span style={{ fontSize: '11px', color: '#64748b', fontWeight: '600' }}>
-                                        Thời lượng: {lesson.duration || '15m'} 
-                                        {lesson.videoUrl && ' • 🎥 Có video'}
-                                        {lesson.content && ' • 📄 Có tài liệu'}
+                                      <span style={{ fontSize: '11px', color: '#64748b', fontWeight: '600', display: 'block', marginBottom: '4px' }}>
+                                        Thời lượng: {lesson.duration || '15m'}
                                       </span>
+                                      
+                                      {/* Full lesson content details for teacher review */}
+                                      <div style={{ background: '#f8fafc', padding: '6px 10px', borderRadius: '6px', border: '1px solid #e2e8f0', fontSize: '10.5px', color: '#334155', marginTop: '6px' }}>
+                                        {lesson.videoUrl ? (
+                                          <div style={{ marginBottom: '4px' }}>
+                                            <strong>🎥 Video Link: </strong>
+                                            <a href={lesson.videoUrl} target="_blank" rel="noopener noreferrer" style={{ color: '#0284c7', textDecoration: 'underline', wordBreak: 'break-all' }}>
+                                              {lesson.videoUrl}
+                                            </a>
+                                          </div>
+                                        ) : (
+                                          <div style={{ color: '#94a3b8', marginBottom: '4px' }}>🎥 Không có video</div>
+                                        )}
+                                        {lesson.content ? (
+                                          <div>
+                                            <strong>📄 Tài liệu / Nội dung bài giảng: </strong>
+                                            <div style={{ maxHeight: '80px', overflowY: 'auto', whiteSpace: 'pre-wrap', background: '#fff', padding: '4px 6px', borderRadius: '4px', border: '1px solid #cbd5e1', marginTop: '2px' }}>
+                                              {lesson.content}
+                                            </div>
+                                          </div>
+                                        ) : (
+                                          <div style={{ color: '#94a3b8' }}>📄 Không có tài liệu đính kèm</div>
+                                        )}
+                                      </div>
                                     </div>
                                     <div style={{ display: 'flex', gap: '4px' }}>
                                       <button 
@@ -1973,8 +2348,73 @@ export default function TeacherDashboard({
                     </button>
                   </div>
 
+                  {/* Status Filter Tabs */}
+                  {(() => {
+                    const STATUS_TABS = [
+                      { key: 'ALL', label: 'Tất cả', icon: '📋' },
+                      { key: 'PENDING', label: 'Chờ duyệt', icon: '⏳', color: '#92400e', bg: '#fef3c7' },
+                      { key: 'APPROVED', label: 'Đã duyệt', icon: '✅', color: '#065f46', bg: '#d1fae5' },
+                      { key: 'REJECTED', label: 'Bị từ chối', icon: '❌', color: '#991b1b', bg: '#fee2e2' },
+                      { key: 'HIDDEN', label: 'Đã ẩn', icon: '🙈', color: '#475569', bg: '#f1f5f9' },
+                    ];
+                    const countByStatus = (s) => {
+                      if (s === 'ALL') return courses.length;
+                      if (s === 'HIDDEN') return courses.filter(c => c.visibility === 'HIDDEN' && c.status === 'APPROVED').length;
+                      if (s === 'APPROVED') return courses.filter(c => c.status === 'APPROVED' && c.visibility !== 'HIDDEN').length;
+                      return courses.filter(c => c.status === s).length;
+                    };
+                    return (
+                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                        {STATUS_TABS.map(tab => {
+                          const cnt = countByStatus(tab.key);
+                          const isActive = courseStatusFilter === tab.key;
+                          return (
+                            <button
+                              key={tab.key}
+                              onClick={() => setCourseStatusFilter(tab.key)}
+                              style={{
+                                display: 'inline-flex', alignItems: 'center', gap: '4px',
+                                padding: '5px 10px', fontSize: '11px', fontWeight: '800',
+                                border: `2px solid #000`,
+                                borderRadius: '8px', cursor: 'pointer',
+                                background: isActive ? (tab.bg || '#0f172a') : '#fff',
+                                color: isActive ? (tab.color || '#fff') : '#475569',
+                                boxShadow: isActive ? '2px 2px 0px #000' : 'none',
+                                transform: isActive ? 'translate(-1px, -1px)' : 'none',
+                                transition: 'all 0.1s'
+                              }}
+                            >
+                              {tab.icon} {tab.label}
+                              <span style={{
+                                background: isActive ? 'rgba(0,0,0,0.15)' : '#e2e8f0',
+                                color: isActive ? (tab.color || '#000') : '#64748b',
+                                borderRadius: '10px', padding: '0 5px', fontSize: '10px', fontWeight: '900'
+                              }}>{cnt}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                    {courses.map((course) => {
+                    {(() => {
+                      const filteredCourses = courseStatusFilter === 'ALL'
+                        ? courses
+                        : courseStatusFilter === 'HIDDEN'
+                        ? courses.filter(c => c.visibility === 'HIDDEN' && c.status === 'APPROVED')
+                        : courseStatusFilter === 'APPROVED'
+                        ? courses.filter(c => c.status === 'APPROVED' && c.visibility !== 'HIDDEN')
+                        : courses.filter(c => c.status === courseStatusFilter);
+                      if (filteredCourses.length === 0) {
+                        return (
+                          <div style={{ textAlign: 'center', padding: '32px 16px', color: '#94a3b8' }}>
+                            <span style={{ fontSize: '32px', display: 'block', marginBottom: '8px' }}>📭</span>
+                            <p style={{ fontWeight: '700', fontSize: '13px', margin: 0 }}>Không có khóa học nào trong mục này.</p>
+                          </div>
+                        );
+                      }
+                      return filteredCourses.map((course) => {
                       const isSelected = course.id === selectedCourseId;
                       return (
                         <div 
@@ -2002,18 +2442,18 @@ export default function TeacherDashboard({
                                 
                                 <span 
                                   style={{ 
-                                    fontSize: '9px', fontWeight: 'bold', padding: '2px 6px', borderRadius: '6px', border: '1.5px solid #000', marginLeft: 'auto',
-                                    backgroundColor: course.isPublished ? '#d1fae5' : '#f1f5f9',
-                                    color: course.isPublished ? '#065f46' : '#475569'
+                                    fontSize: '9px', fontWeight: 'bold', padding: '2px 8px', borderRadius: '6px', border: '1.5px solid #000', marginLeft: 'auto', whiteSpace: 'nowrap',
+                                    backgroundColor: (course.status === 'APPROVED' && course.visibility === 'HIDDEN') ? '#f1f5f9' : course.status === 'APPROVED' ? '#d1fae5' : course.status === 'PENDING' ? '#fef3c7' : course.status === 'REJECTED' ? '#fee2e2' : '#f1f5f9',
+                                    color: (course.status === 'APPROVED' && course.visibility === 'HIDDEN') ? '#475569' : course.status === 'APPROVED' ? '#065f46' : course.status === 'PENDING' ? '#92400e' : course.status === 'REJECTED' ? '#991b1b' : '#475569'
                                   }}
                                 >
-                                  {course.isPublished ? '✓ ĐANG BÁN' : '🔒 BẢN NHÁP'}
+                                  {(course.status === 'APPROVED' && course.visibility === 'HIDDEN') ? '🙈 ĐÃ ẨN' : course.status === 'APPROVED' ? '✅ ĐÃ DUYỆT' : course.status === 'PENDING' ? '⏳ CHỜ DUYỆT' : course.status === 'REJECTED' ? '❌ BỊ TỪ CHỐI' : '📝 BẢN NHÁP'}
                                 </span>
                               </div>
                               <h4 style={{ fontSize: '14px', fontWeight: '800', margin: '8px 0 4px 0', color: '#0f172a' }}>{course.title}</h4>
                             </div>
 
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px dashed #e2e8f0', paddingTop: '8px', marginTop: '4px' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px dashed #e2e8f0', paddingTop: '8px', marginTop: '4px' }}>
                               <div style={{ display: 'flex', gap: '8px', fontSize: '11px', fontWeight: '700', color: '#64748b' }}>
                                 <span>📖 {course.lessons?.length || 0} bài học</span>
                                 <span>•</span>
@@ -2021,6 +2461,12 @@ export default function TeacherDashboard({
                               </div>
 
                               <div style={{ display: 'flex', gap: '6px' }}>
+                                {(course.status === 'REJECTED') && (
+                                  <span style={{ fontSize: '10px', color: '#991b1b', fontWeight: '700', background: '#fee2e2', border: '1.5px solid #000', borderRadius: '6px', padding: '2px 6px', alignSelf: 'center' }}
+                                    title={course.rejectedReason}>
+                                    💬 {course.rejectedReason ? course.rejectedReason.slice(0, 30) + '...' : 'Xem lý do từ chối'}
+                                  </span>
+                                )}
                                 <button 
                                   onClick={() => {
                                     setSelectedCourseId(course.id);
@@ -2061,7 +2507,8 @@ export default function TeacherDashboard({
                           </div>
                         </div>
                       );
-                    })}
+                      });
+                    })()}
                   </div>
                 </div>
 
@@ -2461,8 +2908,7 @@ export default function TeacherDashboard({
             <div style={{ display: 'flex', gap: '12px', borderBottom: '1px solid #e2e8f0', paddingBottom: '12px' }}>
               {[
                 { id: 'list', name: '📋 Danh sách đề thi' },
-                { id: 'build', name: '🛠️ Soạn & Upload đề thi' },
-                { id: 'moderate', name: '⚖️ Kiểm duyệt đề thi (' + exams.filter(e => e.status === 'pending').length + ')' }
+                { id: 'build', name: '🛠️ Soạn & Upload đề thi' }
               ].map(sub => (
                 <button
                   key={sub.id}
@@ -2485,50 +2931,160 @@ export default function TeacherDashboard({
             {/* Subtab 1: List */}
             {examSubTab === 'list' && (
               <div className="tdb-card">
-                <h3 className="tdb-card-title" style={{ borderBottom: '1px solid #e2e8f0', paddingBottom: '14px', marginBottom: '10px' }}>
-                  📋 Danh sách đề thi hệ thống
-                </h3>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '16px' }}>
-                  {exams.map((ex) => (
-                    <div key={ex.id} style={{ padding: '14px', border: '1px solid #e2e8f0', borderRadius: '16px', background: '#f8fafc', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-                      <div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '6px' }}>
-                          <h4 style={{ fontSize: '13.5px', fontWeight: '800', margin: 0, color: '#0f172a' }}>{ex.title}</h4>
-                          <span className="tdb-exam-pill" style={{ fontSize: '9px' }}>{ex.subject}</span>
-                        </div>
-                        <div style={{ display: 'flex', gap: '6px', marginBottom: '10px' }}>
-                          <span style={{ fontSize: '10px', fontWeight: 'bold', borderRadius: '6px', padding: '2px 6px', background: ex.status === 'pending' ? '#fef3c7' : '#d1fae5', color: ex.status === 'pending' ? '#d97706' : '#059669' }}>
-                            {ex.status === 'pending' ? '⏱️ CHỜ DUYỆT' : '✓ ĐÃ PHÁT HÀNH'}
-                          </span>
-                          {ex.grade && (
-                            <span style={{ fontSize: '10px', fontWeight: 'bold', borderRadius: '6px', padding: '2px 6px', background: '#e0e7ff', color: '#4f46e5' }}>
-                              Lớp {ex.grade}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px', background: '#fff', padding: '8px', border: '1px solid #e2e8f0', borderRadius: '12px', fontSize: '10px', fontWeight: '600', textAlign: 'center' }}>
-                        <div>
-                          <div style={{ color: '#64748b' }}>Câu hỏi</div>
-                          <div style={{ fontSize: '12px', color: '#0f172a', fontWeight: 'bold' }}>{ex.questionCount}</div>
-                        </div>
-                        <div>
-                          <div style={{ color: '#64748b' }}>Lượt thi</div>
-                          <div style={{ fontSize: '12px', color: '#2563eb', fontWeight: 'bold' }}>{ex.attempts}</div>
-                        </div>
-                        <div>
-                          <div style={{ color: '#64748b' }}>T.Bình</div>
-                          <div style={{ fontSize: '12px', color: '#f59e0b', fontWeight: 'bold' }}>{ex.avgScore ? `${ex.avgScore}đ` : '---'}</div>
-                        </div>
-                        <div>
-                          <div style={{ color: '#64748b' }}>Cao nhất</div>
-                          <div style={{ fontSize: '12px', color: '#10b981', fontWeight: 'bold' }}>{ex.maxScore ? `${ex.maxScore}đ` : '---'}</div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #cbd5e1', paddingBottom: '14px', marginBottom: '14px' }}>
+                  <h3 className="tdb-card-title">
+                    📋 Đề thi của tôi ({exams.length})
+                  </h3>
                 </div>
+
+                {/* Status Filter Tabs */}
+                {(() => {
+                  const EXAM_STATUS_TABS = [
+                    { key: 'ALL', label: 'Tất cả', icon: '📋' },
+                    { key: 'PENDING', label: 'Chờ duyệt', icon: '⏳', color: '#92400e', bg: '#fef3c7' },
+                    { key: 'PUBLISHED', label: 'Đã duyệt', icon: '✅', color: '#065f46', bg: '#d1fae5' },
+                    { key: 'REJECTED', label: 'Bị từ chối', icon: '❌', color: '#991b1b', bg: '#fee2e2' },
+                    { key: 'HIDDEN', label: 'Đã ẩn', icon: '🔒', color: '#475569', bg: '#f1f5f9' },
+                  ];
+                  const countByStatus = (s) => {
+                    if (s === 'ALL') return exams.length;
+                    return exams.filter(e => e.status?.toLowerCase() === s.toLowerCase()).length;
+                  };
+
+                  return (
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '18px' }}>
+                      {EXAM_STATUS_TABS.map(tab => {
+                        const isActive = examStatusFilter === tab.key;
+                        const count = countByStatus(tab.key);
+                        return (
+                          <button
+                            key={tab.key}
+                            onClick={() => setExamStatusFilter(tab.key)}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              padding: '6px 12px',
+                              borderRadius: '20px',
+                              border: isActive ? '2px solid #000' : '1px solid #cbd5e1',
+                              background: isActive ? (tab.bg || '#e0e7ff') : '#fff',
+                              color: isActive ? (tab.color || '#1e1b4b') : '#475569',
+                              fontSize: '12px',
+                              fontWeight: 'bold',
+                              cursor: 'pointer',
+                              transition: 'all 0.2s'
+                            }}
+                          >
+                            <span>{tab.icon}</span>
+                            <span>{tab.label}</span>
+                            <span style={{ 
+                              fontSize: '10px', 
+                              background: isActive ? 'rgba(0,0,0,0.1)' : '#f1f5f9', 
+                              padding: '1px 6px', 
+                              borderRadius: '10px',
+                              color: isActive ? 'inherit' : '#64748b'
+                            }}>
+                              {count}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+
+                {exams.filter(ex => {
+                  if (examStatusFilter === 'ALL') return true;
+                  return ex.status?.toLowerCase() === examStatusFilter.toLowerCase();
+                }).length === 0 ? (
+                  <div style={{ padding: '40px', textAlign: 'center', color: '#64748b', fontSize: '13.5px', background: '#f8fafc', borderRadius: '12px', border: '1px dashed #cbd5e1' }}>
+                    📭 Không có đề thi nào ở trạng thái này.
+                  </div>
+                ) : (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '16px' }}>
+                    {exams
+                      .filter(ex => {
+                        if (examStatusFilter === 'ALL') return true;
+                        return ex.status?.toLowerCase() === examStatusFilter.toLowerCase();
+                      })
+                      .map((ex) => {
+                        const isPending = ex.status?.toLowerCase() === 'pending';
+                        const isPublished = ex.status?.toLowerCase() === 'published';
+                        const isRejected = ex.status?.toLowerCase() === 'rejected';
+                        const isHidden = ex.status?.toLowerCase() === 'hidden';
+
+                        return (
+                          <div key={ex.id} style={{ 
+                            padding: '16px', 
+                            border: '2px solid #000', 
+                            borderRadius: '16px', 
+                            background: '#ffffff', 
+                            boxShadow: '4px 4px 0px #000',
+                            display: 'flex', 
+                            flexDirection: 'column', 
+                            justifyContent: 'space-between',
+                            gap: '12px'
+                          }}>
+                            <div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px', marginBottom: '6px' }}>
+                                <h4 style={{ fontSize: '14.5px', fontWeight: '800', margin: 0, color: '#0f172a' }}>{ex.title}</h4>
+                                <span className="tdb-exam-pill" style={{ fontSize: '9px', whiteSpace: 'nowrap' }}>{ex.subject}</span>
+                              </div>
+                              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
+                                <span style={{ 
+                                  fontSize: '10px', 
+                                  fontWeight: 'bold', 
+                                  borderRadius: '6px', 
+                                  padding: '2px 8px', 
+                                  background: isPending ? '#fef3c7' : (isPublished ? '#d1fae5' : (isRejected ? '#fee2e2' : '#f1f5f9')), 
+                                  color: isPending ? '#b45309' : (isPublished ? '#047857' : (isRejected ? '#b91c1c' : '#475569')),
+                                  border: '1.5px solid #000'
+                                }}>
+                                  {isPending ? '⏱️ CHỜ DUYỆT' : (isPublished ? '✓ ĐÃ PHÁT HÀNH' : (isRejected ? '❌ BỊ TỪ CHỐI' : '🔒 ĐÃ ẨN'))}
+                                </span>
+                                {ex.grade && (
+                                  <span style={{ fontSize: '10px', fontWeight: 'bold', borderRadius: '6px', padding: '2px 8px', background: '#e0e7ff', color: '#4f46e5', border: '1.5px solid #000' }}>
+                                    Lớp {ex.grade}
+                                  </span>
+                                )}
+                              </div>
+
+                              {isRejected && ex.rejectedReason && (
+                                <div style={{ padding: '8px 12px', background: '#fee2e2', borderLeft: '3.5px solid #ef4444', borderRadius: '8px', fontSize: '11.5px', color: '#991b1b', marginBottom: '8px' }}>
+                                  <strong>Lý do từ chối:</strong> {ex.rejectedReason}
+                                </div>
+                              )}
+
+                              {isHidden && ex.hiddenReason && (
+                                <div style={{ padding: '8px 12px', background: '#f1f5f9', borderLeft: '3.5px solid #64748b', borderRadius: '8px', fontSize: '11.5px', color: '#475569', marginBottom: '8px' }}>
+                                  <strong>Lý do ẩn:</strong> {ex.hiddenReason}
+                                </div>
+                              )}
+                            </div>
+                            
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px', background: '#f8fafc', padding: '8px', border: '1.5px solid #000', borderRadius: '12px', fontSize: '10px', fontWeight: '600', textAlign: 'center' }}>
+                              <div>
+                                <div style={{ color: '#64748b' }}>Câu hỏi</div>
+                                <div style={{ fontSize: '12px', color: '#0f172a', fontWeight: 'bold' }}>{ex.questionCount}</div>
+                              </div>
+                              <div>
+                                <div style={{ color: '#64748b' }}>Lượt thi</div>
+                                <div style={{ fontSize: '12px', color: '#2563eb', fontWeight: 'bold' }}>{ex.attempts}</div>
+                              </div>
+                              <div>
+                                <div style={{ color: '#64748b' }}>T.Bình</div>
+                                <div style={{ fontSize: '12px', color: '#f59e0b', fontWeight: 'bold' }}>{ex.avgScore ? `${ex.avgScore}đ` : '---'}</div>
+                              </div>
+                              <div>
+                                <div style={{ color: '#64748b' }}>Cao nhất</div>
+                                <div style={{ fontSize: '12px', color: '#10b981', fontWeight: 'bold' }}>{ex.maxScore ? `${ex.maxScore}đ` : '---'}</div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
               </div>
             )}
 
@@ -2629,63 +3185,7 @@ export default function TeacherDashboard({
               </div>
             )}
 
-            {/* Subtab 3: Moderate */}
-            {examSubTab === 'moderate' && (
-              <div className="tdb-card">
-                <h3 className="tdb-card-title" style={{ borderBottom: '1px solid #e2e8f0', paddingBottom: '14px', marginBottom: '10px' }}>
-                  ⚖️ Đề thi đang chờ kiểm duyệt & xuất bản
-                </h3>
-                {exams.filter(e => e.status === 'pending').length > 0 ? (
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: '16px' }}>
-                    {exams.filter(e => e.status === 'pending').map((ex) => (
-                      <div key={ex.id} style={{ padding: '16px', border: '1px solid #cbd5e1', borderRadius: '16px', background: '#FFFDF5', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-                        <div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
-                            <h4 style={{ fontSize: '14px', fontWeight: '800', margin: 0, color: '#0f172a' }}>{ex.title}</h4>
-                            <span className="tdb-exam-pill" style={{ fontSize: '9px' }}>{ex.subject}</span>
-                          </div>
-                          <div style={{ display: 'flex', gap: '6px', marginBottom: '12px', fontSize: '11.5px', fontWeight: '600', color: '#64748b' }}>
-                            <span>Số câu hỏi: <strong>{ex.questionCount} câu</strong></span>
-                            <span>•</span>
-                            <span>Thời gian: <strong>{ex.duration} phút</strong></span>
-                            {ex.grade && (
-                              <>
-                                <span>•</span>
-                                <span style={{ color: '#4f46e5' }}>Lớp {ex.grade}</span>
-                              </>
-                            )}
-                          </div>
-                        </div>
-                        
-                        <div style={{ display: 'flex', gap: '8px', borderTop: '1px dashed #cbd5e1', paddingTop: '12px', marginTop: '10px' }}>
-                          <button 
-                            onClick={() => handleApproveExam(ex.id)}
-                            className="tdb-upgrade-btn"
-                            style={{ flex: 1, background: '#d1fae5', color: '#065f46', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', boxShadow: 'none' }}
-                          >
-                            <HiCheck /> Duyệt đề thi
-                          </button>
-                          <button 
-                            onClick={() => {
-                              setExams(exams.filter(e => e.id !== ex.id));
-                              toast('Đã từ chối và xóa đề thi khỏi hàng đợi kiểm duyệt.', 'info');
-                            }}
-                            className="tdb-upgrade-btn"
-                            style={{ width: 'auto', padding: '8px 12px', background: '#fee2e2', color: '#b91c1c', boxShadow: 'none' }}
-                          >
-                            Từ chối
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div style={{ padding: '40px', textAlign: 'center', color: '#64748b', fontSize: '13.5px' }}>
-                    🎉 Không có đề thi nào đang chờ phê duyệt. Tất cả các đề đã được kiểm duyệt!
-                  </div>
-                )}
-              </div>
-            )}
+            {/* Subtab 3: Moderate (REMOVED) */}
           </div>
         )}
 
@@ -2928,6 +3428,11 @@ export default function TeacherDashboard({
                                 <span className="tdb-material-meta" style={{ fontSize: '12px', color: '#64748b', fontWeight: '600' }}>
                                   Môn: {m.subject} • Lớp: {m.grade} • {size}
                                 </span>
+                                {m.status === 'REJECTED' && m.rejectionReason && (
+                                  <div style={{ marginTop: '6px', color: '#991b1b', fontSize: '11.5px', background: '#fff5f5', padding: '4px 8px', borderRadius: '6px', border: '1px solid #fecaca' }}>
+                                    <strong>Lý do từ chối:</strong> {m.rejectionReason}
+                                  </div>
+                                )}
                               </div>
                             </div>
                             
@@ -2938,11 +3443,24 @@ export default function TeacherDashboard({
                                 padding: '4px 10px', 
                                 borderRadius: '20px',
                                 border: '2px solid #000',
-                                backgroundColor: m.isPublic ? (m.isApproved ? '#d1fae5' : '#fef3c7') : '#f1f5f9',
-                                color: m.isPublic ? (m.isApproved ? '#065f46' : '#b45309') : '#475569'
+                                backgroundColor: 
+                                  m.status === 'APPROVED' ? '#d1fae5' :
+                                  m.status === 'PENDING_REVIEW' ? '#fef3c7' :
+                                  m.status === 'REJECTED' ? '#fee2e2' :
+                                  m.status === 'HIDDEN' ? '#dbeafe' : '#f1f5f9',
+                                color: 
+                                  m.status === 'APPROVED' ? '#065f46' :
+                                  m.status === 'PENDING_REVIEW' ? '#b45309' :
+                                  m.status === 'REJECTED' ? '#991b1b' :
+                                  m.status === 'HIDDEN' ? '#1e3a8a' : '#475569'
                               }}
                             >
-                              {m.isPublic ? (m.isApproved ? '✓ ĐÃ PHÁT HÀNH' : '⏱ CHỜ PHÊ DUYỆT') : '🔒 LƯU NHÁP'}
+                              {
+                                m.status === 'APPROVED' ? '✓ ĐÃ PHÁT HÀNH' :
+                                m.status === 'PENDING_REVIEW' ? '⏱ CHỜ DUYỆT' :
+                                m.status === 'REJECTED' ? '✕ BỊ TỪ CHỐI' :
+                                m.status === 'HIDDEN' ? '👁 ĐÃ ẨN' : '🔒 LƯU NHÁP'
+                              }
                             </span>
                           </div>
 
@@ -2956,15 +3474,67 @@ export default function TeacherDashboard({
                               fontSize: '12.5px' 
                             }}
                           >
-                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontWeight: 'bold', color: '#1e293b' }}>
-                              <input 
-                                type="checkbox" 
-                                checked={m.isPublic}
-                                onChange={(e) => handleToggleMaterialPublic(m.id, e.target.checked)}
-                                style={{ width: '16px', height: '16px', cursor: 'pointer' }}
-                              />
-                              Công khai trên thư viện
-                            </label>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              {(m.status === 'DRAFT' || m.status === 'REJECTED') && (
+                                <button
+                                  onClick={() => handleSendForReview(m.id)}
+                                  className="tdb-upgrade-btn"
+                                  style={{
+                                    padding: '4px 10px',
+                                    fontSize: '11px',
+                                    background: '#059669',
+                                    color: '#fff',
+                                    border: '1.5px solid #000',
+                                    boxShadow: '1.5px 1.5px 0px #000',
+                                    margin: 0
+                                  }}
+                                >
+                                  🚀 Gửi duyệt
+                                </button>
+                              )}
+                              {m.status === 'PENDING_REVIEW' && (
+                                <button
+                                  onClick={async () => {
+                                    try {
+                                      await api.updateTeacherMaterial(m.id, { status: 'DRAFT' });
+                                      toast('Đã rút tài liệu về bản nháp!', 'success');
+                                      await loadTeacherMaterials();
+                                    } catch (err) {
+                                      toast(err.message || 'Thất bại!', 'error');
+                                    }
+                                  }}
+                                  className="tdb-upgrade-btn"
+                                  style={{
+                                    padding: '4px 10px',
+                                    fontSize: '11px',
+                                    background: '#f3f4f6',
+                                    color: '#1f2937',
+                                    border: '1.5px solid #000',
+                                    boxShadow: '1.5px 1.5px 0px #000',
+                                    margin: 0
+                                  }}
+                                >
+                                  🔒 Rút về nháp
+                                </button>
+                              )}
+                              {m.documentResourceId && (
+                                <button
+                                  onClick={() => handleToggleReviews(m)}
+                                  className="tdb-upgrade-btn"
+                                  style={{
+                                    padding: '4px 10px',
+                                    fontSize: '11px',
+                                    background: '#e0f2fe',
+                                    color: '#0369a1',
+                                    border: '1.5px solid #000',
+                                    boxShadow: '1.5px 1.5px 0px #000',
+                                    margin: 0
+                                  }}
+                                >
+                                  ⭐ Xem đánh giá
+                                </button>
+                              )}
+                            </div>
 
                             <div style={{ display: 'flex', gap: '8px' }}>
                               {m.fileUrl && (
@@ -2973,7 +3543,7 @@ export default function TeacherDashboard({
                                   target="_blank" 
                                   rel="noopener noreferrer"
                                   className="tdb-action-icon-btn" 
-                                  title="Tải xuống / Xem thử"
+                                  title="Tải xuống"
                                   style={{ 
                                     display: 'inline-flex', 
                                     alignItems: 'center', 
@@ -2992,6 +3562,29 @@ export default function TeacherDashboard({
                               )}
                               <button 
                                 className="tdb-action-icon-btn" 
+                                onClick={() => {
+                                  setEditingMaterial(m);
+                                  setFormTitle(m.title);
+                                  setFormDescription(m.description || '');
+                                  setFormSubject(m.subject);
+                                  setFormGrade(m.grade || '12');
+                                  setFormPrice(String(m.price || 0));
+                                  setFormIsPublic(m.status === 'PENDING_REVIEW');
+                                }}
+                                title="Chỉnh sửa thông tin" 
+                                style={{ 
+                                  width: '32px', 
+                                  height: '32px', 
+                                  border: '2px solid #000',
+                                  borderRadius: '8px',
+                                  backgroundColor: '#e0f2fe',
+                                  color: '#0284c7' 
+                                }}
+                              >
+                                <HiPencil />
+                              </button>
+                              <button 
+                                className="tdb-action-icon-btn" 
                                 onClick={() => handleDeleteMaterial(m.id)}
                                 title="Xóa tài liệu" 
                                 style={{ 
@@ -3007,6 +3600,57 @@ export default function TeacherDashboard({
                               </button>
                             </div>
                           </div>
+
+                          {expandedReviewsId === m.id && (
+                            <div style={{ marginTop: '14px', borderTop: '2px solid #000', paddingTop: '12px', background: '#f8fafc', padding: '12px', borderRadius: '8px' }}>
+                              <h6 style={{ margin: '0 0 10px 0', fontSize: '13px', fontWeight: 'bold' }}>⭐ ĐÁNH GIÁ TỪ HỌC SINH</h6>
+                              {reviewsLoading ? (
+                                <div style={{ fontSize: '12px', color: '#64748b' }}>Đang tải đánh giá...</div>
+                              ) : materialReviews.length === 0 ? (
+                                <div style={{ fontSize: '12px', color: '#64748b' }}>Chưa có đánh giá nào cho tài liệu này.</div>
+                              ) : (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                  {materialReviews.map(r => (
+                                    <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', background: '#fff', padding: '10px', borderRadius: '8px', border: '1.5px solid #000' }}>
+                                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                        <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: '#6366f1', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontWeight: 'bold' }}>
+                                          {r.student.avatarUrl || r.student.fullName?.substring(0, 2).toUpperCase()}
+                                        </div>
+                                        <div>
+                                          <div style={{ fontSize: '12px', fontWeight: 'bold' }}>{r.student.fullName}</div>
+                                          <div style={{ color: '#f59e0b', fontSize: '11px' }}>
+                                            {'★'.repeat(r.rating)}{'☆'.repeat(5 - r.rating)}
+                                          </div>
+                                          <div style={{ fontSize: '12px', color: '#334155', marginTop: '2px' }}>{r.comment || '(Không có bình luận)'}</div>
+                                          {r.isHidden && (
+                                            <div style={{ fontSize: '10.5px', color: '#b91c1c', fontWeight: 'bold', marginTop: '4px', background: '#fee2e2', padding: '2px 6px', borderRadius: '4px', display: 'inline-block' }}>
+                                              👁️ Bị ẩn: {r.hiddenReason}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleHideReview(r.id, r.isHidden)}
+                                        style={{
+                                          padding: '4px 8px',
+                                          fontSize: '11px',
+                                          border: '1.5px solid #000',
+                                          borderRadius: '6px',
+                                          background: r.isHidden ? '#d1fae5' : '#fee2e2',
+                                          color: r.isHidden ? '#065f46' : '#b91c1c',
+                                          fontWeight: 'bold',
+                                          cursor: 'pointer'
+                                        }}
+                                      >
+                                        {r.isHidden ? 'Hiện nhận xét' : 'Ẩn nhận xét'}
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       );
                     })}
@@ -3017,7 +3661,7 @@ export default function TeacherDashboard({
             {/* RIGHT COLUMN: UPLOAD FORM */}
             <div className="tdb-card" style={{ background: '#fffbeb', border: '3px solid #000', boxShadow: '6px 6px 0px #000' }}>
               <h3 className="tdb-card-title" style={{ borderBottom: '2px solid #000', paddingBottom: '14px', marginBottom: '14px' }}>
-                ➕ Tải lên tài liệu mới
+                {editingMaterial ? '✏️ Chỉnh sửa thông tin tài liệu' : '➕ Tải lên tài liệu mới'}
               </h3>
 
               <form onSubmit={handleUploadMaterialReal} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -3105,43 +3749,70 @@ export default function TeacherDashboard({
                       onChange={e => setFormIsPublic(e.target.checked)}
                       style={{ width: '18px', height: '18px', cursor: 'pointer' }}
                     />
-                    Công khai ngay
+                    Gửi duyệt ngay
                   </label>
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '4px' }}>
-                  <label style={{ fontSize: '12px', fontWeight: 'bold' }}>Chọn tệp từ máy tính:</label>
-                  <input 
-                    type="file" 
-                    ref={materialFileInputRef}
-                    required 
-                    style={{ 
-                      fontSize: '12.5px', 
-                      background: '#fff', 
-                      padding: '8px', 
-                      borderRadius: '8px', 
-                      border: '2px dashed #000', 
-                      width: '100%',
-                      boxSizing: 'border-box'
-                    }} 
-                  />
-                </div>
+                {!editingMaterial ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '4px' }}>
+                    <label style={{ fontSize: '12px', fontWeight: 'bold' }}>Chọn tệp từ máy tính:</label>
+                    <input 
+                      type="file" 
+                      ref={materialFileInputRef}
+                      required 
+                      accept=".pdf,.doc,.docx"
+                      style={{ 
+                        fontSize: '12.5px', 
+                        background: '#fff', 
+                        padding: '8px', 
+                        borderRadius: '8px', 
+                        border: '2px dashed #000', 
+                        width: '100%',
+                        boxSizing: 'border-box'
+                      }} 
+                    />
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '11px', color: '#64748b', background: '#f8fafc', padding: '8px', borderRadius: '6px', border: '1.5px solid #e2e8f0' }}>
+                    ℹ️ Chế độ sửa thông tin không hỗ trợ đổi tệp tin. Nếu muốn đổi tệp tin, vui lòng xóa và tạo mới tài liệu.
+                  </div>
+                )}
 
-                <button 
-                  type="submit" 
-                  disabled={uploadingMaterial}
-                  className="tdb-upgrade-btn" 
-                  style={{ 
-                    background: '#6366f1', 
-                    color: '#fff', 
-                    border: '2px solid #000', 
-                    boxShadow: uploadingMaterial ? 'none' : '4px 4px 0px #000',
-                    marginTop: '10px',
-                    cursor: uploadingMaterial ? 'not-allowed' : 'pointer'
-                  }}
-                >
-                  {uploadingMaterial ? '⏳ Đang tải tài liệu lên...' : '🚀 Bắt đầu tải lên'}
-                </button>
+                <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
+                  <button 
+                    type="submit" 
+                    disabled={uploadingMaterial}
+                    className="tdb-upgrade-btn" 
+                    style={{ 
+                      flex: 2, 
+                      margin: 0,
+                      background: '#6366f1', 
+                      color: '#fff', 
+                      border: '2px solid #000', 
+                      boxShadow: uploadingMaterial ? 'none' : '4px 4px 0px #000',
+                      cursor: uploadingMaterial ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    {uploadingMaterial ? '⏳ Đang lưu...' : (editingMaterial ? '💾 Lưu thay đổi' : '🚀 Bắt đầu tải lên')}
+                  </button>
+                  {editingMaterial && (
+                    <button 
+                      type="button" 
+                      onClick={resetMaterialForm}
+                      className="tdb-upgrade-btn" 
+                      style={{ 
+                        flex: 1, 
+                        margin: 0, 
+                        background: '#fff', 
+                        color: '#000', 
+                        border: '2px solid #000',
+                        boxShadow: '4px 4px 0px #000'
+                      }}
+                    >
+                      Hủy
+                    </button>
+                  )}
+                </div>
               </form>
             </div>
             
@@ -3255,17 +3926,71 @@ export default function TeacherDashboard({
               </h3>
               <div className="tdb-notif-list" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 {dbStats?.notifications && dbStats.notifications.length > 0 ? (
-                  dbStats.notifications.map((notif) => (
-                    <div key={notif.id} className="tdb-notif-item animate-in" style={{ padding: '12px 0' }}>
-                      <span className="tdb-notif-icon-dot orange">🔔</span>
-                      <div className="tdb-notif-body">
-                        <p className="tdb-notif-text">{notif.message}</p>
-                        <span className="tdb-notif-time">
-                          {new Date(notif.createdAt).toLocaleString('vi-VN')}
-                        </span>
+                  dbStats.notifications.map((notif) => {
+                    const isReadNotif = notif.read || notif.isRead;
+                    const btnColor = notif.type === 'SUCCESS' ? '#10B981' : notif.type === 'WARNING' ? '#F59E0B' : notif.type === 'ERROR' ? '#EF4444' : '#6c5ce7';
+                    return (
+                      <div key={notif.id} className="tdb-notif-item animate-in" style={{ padding: '12px 0', display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+                        <span className="tdb-notif-icon-dot orange">🔔</span>
+                        <div className="tdb-notif-body" style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+                          <p className="tdb-notif-text" style={{ margin: 0 }}>{notif.message}</p>
+                          {notif.link && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (!isReadNotif) {
+                                  api.markNotificationAsRead(notif.id).then(() => {
+                                    setDbStats(prev => {
+                                      if (!prev) return prev;
+                                      return {
+                                        ...prev,
+                                        notifications: prev.notifications.map(item => item.id === notif.id ? { ...item, read: true, isRead: true } : item)
+                                      };
+                                    });
+                                  }).catch(console.error);
+                                }
+                                if (navigateTo) navigateTo(notif.link);
+                              }}
+                              style={{
+                                marginTop: '8px',
+                                padding: '5px 10px',
+                                borderRadius: '6px',
+                                background: btnColor,
+                                color: '#FFFFFF',
+                                border: '1.5px solid #000000',
+                                boxShadow: '1px 1px 0px #000000',
+                                fontSize: '10.5px',
+                                fontWeight: 'bold',
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                transition: 'all 0.1s ease',
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.transform = 'translate(-1px, -1px)';
+                                e.currentTarget.style.boxShadow = '2px 2px 0px #000000';
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.transform = 'none';
+                                e.currentTarget.style.boxShadow = '1px 1px 0px #000000';
+                              }}
+                            >
+                              {notif.category === 'COURSE' && 'Vào học ngay 🚀'}
+                              {notif.category === 'EXAM' && 'Luyện tập ngay 📝'}
+                              {notif.category === 'PAYMENT' && 'Xem chi tiết 🧾'}
+                              {notif.category === 'TEACHER' && 'Xem lớp học 👨‍🏫'}
+                              {notif.category === 'AI' && 'Khám phá AI 🤖'}
+                              {!['COURSE', 'EXAM', 'PAYMENT', 'TEACHER', 'AI'].includes(notif.category) && 'Xem chi tiết ➔'}
+                            </button>
+                          )}
+                          <span className="tdb-notif-time" style={{ marginTop: '4px' }}>
+                            {new Date(notif.createdAt).toLocaleString('vi-VN')}
+                          </span>
+                        </div>
                       </div>
-                    </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <>
                     <div className="tdb-notif-item" style={{ padding: '12px 0' }}>

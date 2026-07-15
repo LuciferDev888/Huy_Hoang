@@ -78,6 +78,7 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
   const [searchResults, setSearchResults] = useState([]);
   const [searchIndex, setSearchIndex] = useState(-1);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showHelpModal, setShowHelpModal] = useState(false);
   
   // Input states
   const [inputText, setInputText] = useState('');
@@ -108,10 +109,13 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
   const [editNodeDesc, setEditNodeDesc] = useState('');
   const [newChildName, setNewChildName] = useState('');
   const [newChildDesc, setNewChildDesc] = useState('');
+  const [isEditingNode, setIsEditingNode] = useState(false);
   // Sidebar resizing and node shapes states
   const [sidebarWidth, setSidebarWidth] = useState(280);
   const [editNodeShape, setEditNodeShape] = useState('oval');
   const isDraggingSidebarRef = useRef(false);
+  const isDirtyRef = useRef(false);
+  const [autosaveStatus, setAutosaveStatus] = useState('');
   const [blankMindmapTitle, setBlankMindmapTitle] = useState('Sơ đồ tư duy mới');
   const examFileInputRef = useRef(null);
   const [isDraggingExamFile, setIsDraggingExamFile] = useState(false);
@@ -197,6 +201,7 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
   const fileInputRef = useRef(null);
   const svgRef = useRef(null);
   const chatEndRef = useRef(null);
+  const drawerBodyRef = useRef(null);
 
   const loadSharedMindmap = async (id) => {
     setIsLoading(true);
@@ -252,16 +257,16 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
       }
     }
 
-    // Fetch saved list if logged in
-    if (currentUser) {
-      fetchHistory();
-    }
+    // Fetch saved list on mount or when auth state changes
+    fetchHistory(true);
   }, [currentUser]);
 
   // Adjust scroll when new messages arrive in drawer
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [nodeChatMessages, selectedNode, isNodeChatTyping]);
+    if (selectedNode) {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [nodeChatMessages, isNodeChatTyping]);
 
   // Sync selected node with edit fields
   useEffect(() => {
@@ -271,8 +276,59 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
       setEditNodeShape(selectedNode.shape || 'oval');
       setNewChildName('');
       setNewChildDesc('');
+      if (drawerBodyRef.current) {
+        drawerBodyRef.current.scrollTop = 0;
+      }
     }
   }, [selectedNode]);
+
+  // Autosave Effect
+  useEffect(() => {
+    if (!mindmapData || !isDirtyRef.current) return;
+
+    setAutosaveStatus('saving');
+    const timer = setTimeout(async () => {
+      try {
+        if (!currentUser) {
+          // LocalStorage save
+          const localId = activeMindmapDbId || `local-${Date.now()}`;
+          const newMindmap = {
+            id: localId,
+            title: mindmapData.name.trim() || 'Sơ đồ tư duy không tên',
+            content: mindmapData,
+            createdAt: new Date().toISOString()
+          };
+          const stored = localStorage.getItem('edupath_saved_mindmaps');
+          let list = stored ? JSON.parse(stored) : [];
+          const existingIdx = list.findIndex(m => m.id === localId);
+          if (existingIdx > -1) {
+            list[existingIdx] = newMindmap;
+          } else {
+            list = [newMindmap, ...list];
+          }
+          localStorage.setItem('edupath_saved_mindmaps', JSON.stringify(list));
+          setActiveMindmapDbId(localId);
+          loadLocalHistory();
+        } else {
+          // DB save
+          const response = await api.saveMindmap(mindmapData.name, mindmapData, activeMindmapDbId);
+          const savedId = response?.id || response?.data?.id;
+          if (savedId) {
+            setActiveMindmapDbId(savedId);
+          }
+          fetchHistory();
+        }
+        isDirtyRef.current = false;
+        setAutosaveStatus('saved');
+        setTimeout(() => setAutosaveStatus(''), 3000);
+      } catch (err) {
+        console.error('Autosave error:', err);
+        setAutosaveStatus('');
+      }
+    }, 2000);
+
+    return () => clearTimeout(timer);
+  }, [mindmapData, currentUser, activeMindmapDbId]);
 
   // Panning & Zooming SVG passive event hook
   useEffect(() => {
@@ -292,15 +348,37 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
   }, [svgRef.current]);
 
   // Fetch saved history
-  const fetchHistory = async () => {
+  const fetchHistory = async (autoLoadIfEmpty = false) => {
+    const activeId = localStorage.getItem('edupath_active_mindmap_id');
+
     if (!currentUser) {
-      loadLocalHistory();
+      try {
+        const stored = localStorage.getItem('edupath_saved_mindmaps');
+        const mindmaps = stored ? JSON.parse(stored) : [];
+        setSavedMindmaps(mindmaps);
+
+        if (autoLoadIfEmpty && mindmaps.length > 0 && !activeMindmapDbId && !mindmapData) {
+          const target = mindmaps.find(m => String(m.id) === String(activeId)) || mindmaps[0];
+          handleLoadMindmap(target);
+          setActiveTab('history');
+        }
+      } catch (e) {
+        console.error(e);
+      }
       return;
     }
     setIsHistoryLoading(true);
     try {
       const data = await api.getMindmaps();
-      setSavedMindmaps(data || []);
+      const mindmaps = data || [];
+      setSavedMindmaps(mindmaps);
+
+      // Auto-load the last active mindmap if requested and nothing is loaded yet
+      if (autoLoadIfEmpty && mindmaps.length > 0 && !activeMindmapDbId && !mindmapData) {
+        const target = mindmaps.find(m => String(m.id) === String(activeId)) || mindmaps[0];
+        handleLoadMindmap(target);
+        setActiveTab('history');
+      }
     } catch (err) {
       console.error("Failed to load history:", err);
     } finally {
@@ -524,6 +602,7 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
 
   const handleNodeSelect = (node) => {
     setSelectedNode(node);
+    setIsEditingNode(false);
   };
 
   // Flat Node Index Memoization for fast searches
@@ -605,16 +684,67 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
     }
   };
 
-  // Client-side HTML5 Canvas PNG Exporter
-  const handleExportPng = () => {
+  // Client-side html-to-image PNG Exporter
+  const handleExportPng = async () => {
     if (!svgRef.current) return;
+    setIsLoading(true);
+    setLoadingStep('Đang chuẩn bị công cụ xuất ảnh PNG...');
     try {
-      const svgElement = svgRef.current;
-      const serializer = new XMLSerializer();
-      let svgString = serializer.serializeToString(svgElement);
+      // Dynamically load html-to-image library from jsDelivr CDN
+      const htmlToImage = await new Promise((resolve, reject) => {
+        if (window.htmlToImage) {
+          resolve(window.htmlToImage);
+          return;
+        }
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/html-to-image@1.11.13/dist/html-to-image.min.js';
+        script.onload = () => resolve(window.htmlToImage);
+        script.onerror = (err) => reject(new Error('Không thể tải thư viện xuất ảnh PNG.'));
+        document.body.appendChild(script);
+      });
 
-      const styles = `
-        svg { background-color: #141410; font-family: 'Outfit', 'Inter', sans-serif; }
+      setLoadingStep('Đang chuyển đổi sơ đồ thành ảnh PNG...');
+      const svgElement = svgRef.current;
+      const contentGroup = svgElement.querySelector('g');
+      if (!contentGroup) {
+        throw new Error('Không tìm thấy nội dung sơ đồ để xuất.');
+      }
+
+      // Temporarily remove transform of <g> to measure local bounding box
+      const originalTransform = contentGroup.getAttribute('transform');
+      contentGroup.setAttribute('transform', 'translate(0,0) scale(1)');
+      const bbox = svgElement.getBBox ? svgElement.getBBox() : { x: 0, y: 0, width: 1200, height: 800 };
+      
+      // Restore original transform
+      contentGroup.setAttribute('transform', originalTransform);
+
+      // Clone SVG and set its dimensions to encapsulate the whole mindmap
+      const clonedSvg = svgElement.cloneNode(true);
+      const clonedContentGroup = clonedSvg.querySelector('g');
+      
+      const padding = 80;
+      const width = bbox.width + padding * 2;
+      const height = bbox.height + padding * 2;
+
+      clonedSvg.setAttribute('width', width);
+      clonedSvg.setAttribute('height', height);
+      clonedSvg.setAttribute('style', `background-color: #141410; width: ${width}px; height: ${height}px;`);
+
+      // Translate group in the clone so the whole mindmap is visible inside cloned bounds
+      const tx = padding - bbox.x;
+      const ty = padding - bbox.y;
+      clonedContentGroup.setAttribute('transform', `translate(${tx}, ${ty}) scale(1)`);
+
+      // Append clone to body off-screen to allow proper stylesheet styles inheritance
+      clonedSvg.style.position = 'absolute';
+      clonedSvg.style.top = '-9999px';
+      clonedSvg.style.left = '-9999px';
+      document.body.appendChild(clonedSvg);
+
+      // Inline mindmap styles into the clone
+      const styleEl = document.createElement('style');
+      styleEl.innerHTML = `
+        svg { background-color: #141410; font-family: 'Inter', system-ui, sans-serif; }
         .canvas-node-card { border-radius: 14px; text-align: center; display: flex; align-items: center; justify-content: center; box-sizing: border-box; }
         .canvas-node-card-root { background: linear-gradient(135deg, #3B82F6, #1D4ED8) !important; color: #FFFFFF !important; }
         .canvas-node-card-level1 { background: linear-gradient(135deg, #8B5CF6, #6D28D9) !important; color: #FFFFFF !important; }
@@ -626,48 +756,35 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
         .node-status-badge { position: absolute; top: 4px; right: 6px; font-size: 9px; font-weight: 800; }
         text { fill: #F3F4F6; }
       `;
-      svgString = svgString.replace('</svg>', `<style>${styles}</style></svg>`);
+      clonedSvg.appendChild(styleEl);
 
-      const svgBlob = new Blob([svgString], { type: "image/svg+xml;charset=utf-8" });
-      const URL = window.URL || window.webkitURL || window;
-      const blobURL = URL.createObjectURL(svgBlob);
-      
-      const image = new Image();
-      image.onload = () => {
-        const canvas = document.createElement("canvas");
-        const bbox = svgElement.getBBox ? svgElement.getBBox() : { x: 0, y: 0, width: 1200, height: 800 };
-        
-        const padding = 120;
-        canvas.width = Math.max(bbox.width + padding * 2, 1200);
-        canvas.height = Math.max(bbox.height + padding * 2, 800);
-        
-        const context = canvas.getContext("2d");
-        if (context) {
-          context.fillStyle = "#141410";
-          context.fillRect(0, 0, canvas.width, canvas.height);
-          
-          const dx = padding - bbox.x;
-          const dy = padding - bbox.y;
-          context.drawImage(image, dx, dy);
-          
-          const pngUrl = canvas.toDataURL("image/png");
-          const downloadLink = document.createElement("a");
-          downloadLink.href = pngUrl;
-          downloadLink.download = `${mindmapData?.name || 'mindmap'}.png`;
-          document.body.appendChild(downloadLink);
-          downloadLink.click();
-          document.body.removeChild(downloadLink);
-          toast('Đã xuất file PNG thành công!', 'success');
+      const dataUrl = await htmlToImage.toPng(clonedSvg, {
+        width: width,
+        height: height,
+        style: {
+          transform: 'none',
+          left: '0',
+          top: '0',
+          position: 'static'
         }
-      };
-      image.onerror = (e) => {
-        console.error("PNG export image load error", e);
-        toast('Lỗi khi vẽ file PNG. Một số thành phần SVG có thể không được hỗ trợ.', 'error');
-      };
-      image.src = blobURL;
+      });
+
+      document.body.removeChild(clonedSvg);
+
+      const downloadLink = document.createElement("a");
+      downloadLink.href = dataUrl;
+      downloadLink.download = `${mindmapData?.name || 'mindmap'}.png`;
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      document.body.removeChild(downloadLink);
+      
+      toast('Đã xuất file PNG thành công!', 'success');
     } catch (err) {
       console.error(err);
-      toast('Lỗi khi xuất PNG!', 'error');
+      toast('Lỗi khi xuất ảnh PNG! Thử phóng to/thu nhỏ sơ đồ trước khi xuất.', 'error');
+    } finally {
+      setIsLoading(false);
+      setLoadingStep('');
     }
   };
 
@@ -699,14 +816,19 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
                   e.stopPropagation();
                   handleToggleExpand(node.id);
                 }}
+                style={{ marginTop: '2px' }}
               >
                 {isExpanded ? '▼' : '▶'}
               </button>
             )}
-            <span className="outline-node-name" style={{ fontWeight: depth === 0 ? '800' : (depth === 1 ? '700' : '500') }}>
-              {node.name}
-            </span>
-            <span className="outline-node-desc">{node.description}</span>
+            <div className="outline-node-text-group">
+              <span className="outline-node-name" style={{ fontWeight: depth === 0 ? '800' : (depth === 1 ? '700' : '500') }}>
+                {node.name}
+              </span>
+              {node.description && (
+                <span className="outline-node-desc">{node.description}</span>
+              )}
+            </div>
           </div>
           <div className="outline-node-actions">
             {statusBadge}
@@ -816,16 +938,14 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
       const pathData = `M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
       
       const isTargetSelected = selectedNode?.id === link.target.id;
+      const isSourceSelected = selectedNode?.id === link.source.id;
+      const isActive = isTargetSelected || isSourceSelected;
 
       return (
         <path
           key={link.id}
           d={pathData}
-          fill="none"
-          stroke="#000000"
-          strokeWidth="3.5"
-          strokeDasharray={isTargetSelected ? "4 3" : "none"}
-          style={{ transition: 'stroke 0.2s, stroke-width 0.2s' }}
+          className={`canvas-connection-path ${isActive ? 'canvas-connection-path--active' : ''}`}
         />
       );
     });
@@ -917,7 +1037,7 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
                     bottom: 0,
                     width: '7px',
                     backgroundColor: progressStyle.statusColor,
-                    borderRight: '2px solid #000000',
+                    borderRight: '1px solid rgba(0,0,0,0.06)',
                     zIndex: 2
                   }}
                 />
@@ -959,17 +1079,18 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
             >
               <circle 
                 r="10" 
-                fill="#ffffff" 
-                stroke="#000000"
-                strokeWidth="2.5"
+                fill="var(--mm-card-dark)" 
+                stroke="var(--mm-gold)"
+                strokeWidth="1.5"
                 style={{ transition: 'all 0.2s' }}
+                className="canvas-node-toggle-circle"
               />
               <text
                 textAnchor="middle"
                 dominantBaseline="central"
-                fontSize="13"
+                fontSize="12"
                 fontWeight="900"
-                fill="#000000"
+                fill="#1e293b"
                 y="0.5"
                 style={{ userSelect: 'none' }}
               >
@@ -1039,6 +1160,7 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
 
         localStorage.setItem('edupath_saved_mindmaps', JSON.stringify(list));
         setActiveMindmapDbId(localId);
+        localStorage.setItem('edupath_active_mindmap_id', localId);
         toast('Đã lưu sơ đồ tư duy vào bộ nhớ tạm trình duyệt!', 'success');
         
         loadLocalHistory();
@@ -1052,7 +1174,9 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
     try {
       const response = await api.saveMindmap(mindmapData.name, mindmapData, activeMindmapDbId);
       toast('Đã lưu sơ đồ tư duy vào Thư viện thành công!', 'success');
-      setActiveMindmapDbId(response.id);
+      const savedId = response?.id || response?.data?.id || response;
+      setActiveMindmapDbId(savedId);
+      localStorage.setItem('edupath_active_mindmap_id', savedId);
       fetchHistory();
     } catch (err) {
       console.error(err);
@@ -1080,7 +1204,7 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
     }
   }, [activeMindmapDbId]);
 
-  const handleStartNodeQuiz = async () => {
+  const handleStartNodeQuiz = async (refresh = false) => {
     if (!mindmapData) return;
     if (!selectedNode) {
       toast("Vui lòng chọn một nút trên sơ đồ tư duy để làm quiz.", "warning");
@@ -1092,8 +1216,9 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
       toast("Đang tự động lưu sơ đồ tư duy trước khi làm quiz...", "info");
       try {
         const response = await api.saveMindmap(mindmapData.name, mindmapData, null);
-        if (response && response.data) {
-          targetMindmapId = response.data.id;
+        const savedId = response?.id || response?.data?.id;
+        if (savedId) {
+          targetMindmapId = savedId;
           setActiveMindmapDbId(targetMindmapId);
           const data = await api.getMindmaps();
           setSavedMindmaps(data || []);
@@ -1118,7 +1243,7 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
     setQuizStartTime(Date.now());
 
     try {
-      const res = await api.generateNodeQuiz(targetMindmapId, selectedNode.id);
+      const res = await api.generateNodeQuiz(targetMindmapId, selectedNode.id, refresh);
       if (res) {
         setQuizQuestions(res);
       } else {
@@ -1298,49 +1423,25 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
     let background = '#ffffff';
     let statusColor = null;
 
+    // Determine status color based on priority or mastery progress
     if (node.priority) {
       const priority = node.priority.toLowerCase();
-      background = '#fee2e2'; // light pastel red/pink
-      if (priority === 'critical') statusColor = '#991B1B';
-      else if (priority === 'high') statusColor = '#DC2626';
-      else if (priority === 'medium') statusColor = '#D97606';
-      else if (priority === 'low') statusColor = '#CA8A04';
-      
-      return { background, statusColor };
-    }
-
-    const progress = nodeProgressMap[nodeId];
-    if (!progress || progress.mastery === undefined) {
-      if (isRoot) {
-        background = '#FFD234'; // yellow sun mascot color
-      } else if (isLevel1) {
-        const colors = ['#bfdbfe', '#a7f3d0', '#fed7aa', '#e9d5ff'];
-        const colorIdx = parseInt(node.id.split('-').slice(-1)[0]) % colors.length;
-        background = colors[colorIdx];
-      } else {
-        background = '#faf9f5'; // off-white/beige
-      }
-      return { background, statusColor };
-    }
-
-    const mastery = progress.mastery;
-    if (mastery < 0.5) {
-      statusColor = '#ef4444'; // Red
-      background = '#fee2e2';
-    } else if (mastery < 0.8) {
-      statusColor = '#f59e0b'; // Orange
-      background = '#fef3c7';
+      if (priority === 'critical') statusColor = '#EF4444';
+      else if (priority === 'high') statusColor = '#F97316';
+      else if (priority === 'medium') statusColor = '#F59E0B';
+      else if (priority === 'low') statusColor = '#10B981';
     } else {
-      statusColor = '#22c55e'; // Green
-      background = '#dcfce7';
-    }
-
-    if (isRoot) {
-      background = '#FFD234';
-    } else if (isLevel1 && !statusColor) {
-      const colors = ['#bfdbfe', '#a7f3d0', '#fed7aa', '#e9d5ff'];
-      const colorIdx = parseInt(node.id.split('-').slice(-1)[0]) % colors.length;
-      background = colors[colorIdx];
+      const progress = nodeProgressMap[nodeId];
+      if (progress && progress.mastery !== undefined) {
+        const mastery = progress.mastery;
+        if (mastery < 0.5) {
+          statusColor = '#EF4444'; // Red (Not understood)
+        } else if (mastery < 0.8) {
+          statusColor = '#F59E0B'; // Orange (Learning)
+        } else {
+          statusColor = '#10B981'; // Green (Mastered)
+        }
+      }
     }
 
     return { background, statusColor };
@@ -1387,6 +1488,29 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
       });
   };
 
+  const handleExpandAllOutline = () => {
+    if (!mindmapData) return;
+    const newExpanded = new Set();
+    const traverse = (node) => {
+      if (!node) return;
+      newExpanded.add(node.id);
+      if (node.children) {
+        node.children.forEach(traverse);
+      }
+    };
+    traverse(mindmapData);
+    setExpandedNodes(newExpanded);
+    toast('Đã mở rộng toàn bộ các cấp độ dàn ý!', 'success');
+  };
+
+  const handleCollapseAllOutline = () => {
+    if (!mindmapData) return;
+    const newExpanded = new Set();
+    newExpanded.add(mindmapData.id);
+    setExpandedNodes(newExpanded);
+    toast('Đã thu gọn toàn bộ các nhánh con!', 'success');
+  };
+
   const handleCreateBlankMindmap = () => {
     const name = prompt('Nhập tiêu đề cho sơ đồ tư duy mới của bạn:', 'Sơ đồ tư duy của tôi');
     if (name === null) return;
@@ -1402,6 +1526,7 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
     setMindmapData(structured);
     setActiveMindmapDbId(null);
     setSelectedNode(null);
+    localStorage.removeItem('edupath_active_mindmap_id');
 
     // Expand root node
     const newExpanded = new Set();
@@ -1441,6 +1566,7 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
 
     const updatedData = updateNodeInTree(mindmapData);
     setMindmapData(updatedData);
+    isDirtyRef.current = true;
     setSelectedNode(findNodeById(updatedData, nodeId));
     toast('Đã cập nhật thông tin nút sơ đồ!', 'success');
   };
@@ -1464,6 +1590,7 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
 
     const updatedData = updateNodeStatusInTree(mindmapData);
     setMindmapData(updatedData);
+    isDirtyRef.current = true;
     setSelectedNode(findNodeById(updatedData, nodeId));
     toast('Đã cập nhật trạng thái học tập của nút!', 'success');
   };
@@ -1501,6 +1628,7 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
     const updatedData = addChildToTree(mindmapData);
     const structured = assignIds(updatedData);
     setMindmapData(structured);
+    isDirtyRef.current = true;
     
     // Automatically expand parent node to see the new child
     setExpandedNodes(prev => {
@@ -1544,6 +1672,7 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
     const updatedData = deleteNodeFromTree(mindmapData);
     const structured = assignIds(updatedData);
     setMindmapData(structured);
+    isDirtyRef.current = true;
     setSelectedNode(null); // Close drawer since selected node is deleted
     toast('Đã xóa nút sơ đồ thành công!', 'success');
   };
@@ -1555,6 +1684,7 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
       const structured = assignIds(parsed);
       setMindmapData(structured);
       setActiveMindmapDbId(savedItem.id);
+      localStorage.setItem('edupath_active_mindmap_id', savedItem.id);
       setSelectedNode(null);
 
       // Auto expand root + level 1
@@ -1569,7 +1699,6 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
       setZoom(0.9);
       setPan({ x: 50, y: 150 });
       
-      toast(`Đã tải sơ đồ: ${savedItem.title}`, 'success');
     } catch (err) {
       console.error(err);
       toast('Không thể parse dữ liệu sơ đồ tư duy đã lưu!', 'error');
@@ -1591,6 +1720,8 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
           localStorage.setItem('edupath_saved_mindmaps', JSON.stringify(nextList));
           if (activeMindmapDbId === id) {
             setActiveMindmapDbId(null);
+            setMindmapData(null);
+            localStorage.removeItem('edupath_active_mindmap_id');
           }
           loadLocalHistory();
           toast('Đã xóa sơ đồ tư duy khỏi trình duyệt!', 'success');
@@ -1607,6 +1738,8 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
       toast('Đã xóa sơ đồ tư duy khỏi Thư viện!', 'success');
       if (activeMindmapDbId === id) {
         setActiveMindmapDbId(null);
+        setMindmapData(null);
+        localStorage.removeItem('edupath_active_mindmap_id');
       }
       fetchHistory();
     } catch (err) {
@@ -1824,22 +1957,16 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
               className={`aitutor-tab-btn ${activeTab === 'create' ? 'aitutor-tab-btn--active' : ''}`}
               onClick={() => setActiveTab('create')}
             >
-              <HiSparkles /> Tạo sơ đồ AI
-            </button>
-            <button 
-              className={`aitutor-tab-btn ${activeTab === 'manual' ? 'aitutor-tab-btn--active' : ''}`}
-              onClick={() => setActiveTab('manual')}
-            >
-              <HiPlus /> Tự thiết kế
+              <HiSparkles /> Tạo sơ đồ mới
             </button>
             <button 
               className={`aitutor-tab-btn ${activeTab === 'history' ? 'aitutor-tab-btn--active' : ''}`}
               onClick={() => {
                 setActiveTab('history');
-                if (currentUser) fetchHistory();
+                fetchHistory();
               }}
             >
-              <HiFolder /> Thư viện
+              <HiFolder /> Thư viện của tôi
             </button>
           </div>
 
@@ -1856,26 +1983,6 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
                 <span>Tạo sơ đồ trống mới</span>
               </button>
 
-              {/* Mindmap Guide card */}
-              <div className="aitutor-guide-card" style={{
-                background: 'rgba(255, 226, 89, 0.03)',
-                border: '1px dashed rgba(255, 226, 89, 0.2)',
-                borderRadius: '12px',
-                padding: '12px',
-                marginBottom: '16px',
-                fontSize: '11px',
-                color: '#ffffff'
-              }}>
-                <h5 style={{ color: 'var(--fc-gold)', margin: '0 0 6px 0', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11.5px', fontWeight: 'bold' }}>
-                  💡 HƯỚNG DẪN SỬ DỤNG HIỆU QUẢ
-                </h5>
-                <ul style={{ margin: 0, paddingLeft: '14px', lineHeight: '1.5', display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                  <li><strong>Tự động tạo:</strong> Dán văn bản hoặc tải file PDF/Ảnh học tập để AI phân tích vẽ sơ đồ.</li>
-                  <li><strong>Tương tác kéo thả:</strong> Nhấp giữ chuột vào khoảng trống canvas để kéo sơ đồ, cuộn chuột để phóng to/thu nhỏ.</li>
-                  <li><strong>Hỏi đáp chuyên sâu:</strong> Click chọn bất kỳ nút nào để mở bảng chat bên phải, chọn <em>Giải thích sâu</em> hoặc <em>Ví dụ</em> để ôn tập cùng EduBot AI.</li>
-                  <li><strong>Lưu & Chia sẻ:</strong> Bấm <strong>Lưu</strong> ở trên cùng để đưa vào Thư viện cá nhân. Sau khi lưu, bấm <strong>🔗 Chia sẻ</strong> để copy link gửi cho bạn bè!</li>
-                </ul>
-              </div>
 
               {/* Drag & drop upload area */}
               <div 
@@ -1946,199 +2053,7 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
             </div>
           )}
 
-          {/* Manual Design Panel */}
-          {activeTab === 'manual' && (
-            <div className="aitutor-panel-content">
-              {/* Section 1: Create Blank Mindmap */}
-              <div className="manual-section" style={{ borderBottom: '1px solid var(--border)', paddingBottom: '16px', marginBottom: '8px' }}>
-                <h5 style={{ color: 'var(--fc-gold)', fontSize: '11px', fontWeight: 'bold', margin: '0 0 10px 0', display: 'flex', alignItems: 'center', gap: '6px', letterSpacing: '0.5px', textTransform: 'uppercase' }}>
-                  🆕 Tạo sơ đồ trống mới
-                </h5>
-                <div style={{ display: 'flex', gap: '8px', flexDirection: 'column' }}>
-                  <input
-                    type="text"
-                    className="flashcard-modal-input"
-                    style={{ background: '#141410', width: '100%', fontSize: '12.5px', padding: '8px 10px', height: '36px', boxSizing: 'border-box' }}
-                    placeholder="Nhập tên sơ đồ..."
-                    value={blankMindmapTitle}
-                    onChange={(e) => setBlankMindmapTitle(e.target.value)}
-                  />
-                  <button 
-                    className="aitutor-action-btn"
-                    style={{ padding: '8px 12px', fontSize: '12px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                    onClick={() => {
-                      const finalName = blankMindmapTitle.trim() || 'Sơ đồ tư duy của tôi';
-                      const newRoot = {
-                        name: finalName,
-                        description: 'Chủ đề gốc. Chọn nút này để thêm nút con hoặc chỉnh sửa nội dung.',
-                        children: []
-                      };
-                      const structured = assignIds(newRoot);
-                      setMindmapData(structured);
-                      setActiveMindmapDbId(null);
-                      setSelectedNode(structured);
-                      const newExpanded = new Set();
-                      newExpanded.add(structured.id);
-                      setExpandedNodes(newExpanded);
-                      setZoom(1.0);
-                      setPan({ x: 150, y: 200 });
-                      toast('Đã khởi tạo sơ đồ tư duy trống mới!', 'success');
-                    }}
-                  >
-                    <HiPlus /> Khởi tạo ngay
-                  </button>
-                </div>
-              </div>
 
-              {/* Section 2: CRUD Selected Node */}
-              {selectedNode ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }} className="animate-in">
-                  <div className="manual-section">
-                    <h5 style={{ color: 'var(--fc-gold)', fontSize: '11px', fontWeight: 'bold', margin: '0 0 10px 0', display: 'flex', alignItems: 'center', gap: '6px', letterSpacing: '0.5px', textTransform: 'uppercase' }}>
-                      ✏️ Chỉnh sửa nút đã chọn
-                    </h5>
-                    
-                    <label className="flashcard-modal-label" style={{ marginBottom: '4px', display: 'block', fontSize: '10px', color: '#ffffff' }}>Tên nút sơ đồ</label>
-                    <input 
-                      type="text"
-                      className="flashcard-modal-input"
-                      style={{ background: '#141410', width: '100%', marginBottom: '10px', fontSize: '13px', height: '36px', padding: '0 10px', boxSizing: 'border-box' }}
-                      value={editNodeName}
-                      onChange={(e) => setEditNodeName(e.target.value)}
-                    />
-
-                    <label className="flashcard-modal-label" style={{ marginBottom: '4px', display: 'block', fontSize: '10px', color: '#ffffff' }}>Mô tả chi tiết</label>
-                    <textarea 
-                      className="flashcard-modal-textarea"
-                      style={{ background: '#141410', width: '100%', marginBottom: '10px', fontSize: '12px', padding: '8px 10px', boxSizing: 'border-box' }}
-                      value={editNodeDesc}
-                      onChange={(e) => setEditNodeDesc(e.target.value)}
-                      rows={2}
-                    />
-
-                    <label className="flashcard-modal-label" style={{ marginBottom: '4px', display: 'block', fontSize: '10px', color: '#ffffff' }}>Hình dạng nút</label>
-                    <select 
-                      className="flashcard-modal-input"
-                      style={{ background: '#141410', width: '100%', marginBottom: '12px', fontSize: '12.5px', color: 'var(--text-primary)', border: '1px solid var(--border)', height: '36px', borderRadius: '10px', padding: '0 8px', boxSizing: 'border-box' }}
-                      value={editNodeShape}
-                      onChange={(e) => setEditNodeShape(e.target.value)}
-                    >
-                      <option value="oval">Hình Bầu Dục (Oval)</option>
-                      <option value="rectangle">Hình Chữ Nhật (Rectangle)</option>
-                      <option value="circle">Hình Tròn (Circle)</option>
-                      <option value="rhombus">Hình Thoi (Rhombus)</option>
-                    </select>
-
-                    <label className="flashcard-modal-label" style={{ marginBottom: '4px', display: 'block', fontSize: '10px', color: '#ffffff' }}>Trạng thái học tập</label>
-                    <div className="status-tagger-group" style={{ marginBottom: '12px' }}>
-                      <button 
-                        type="button"
-                        className={`status-tag-pill ${selectedNode.status === 'none' || !selectedNode.status ? 'status-tag-pill--active' : ''}`}
-                        data-type="none"
-                        onClick={() => handleUpdateNodeStatus('none')}
-                      >
-                        Chưa học
-                      </button>
-                      <button 
-                        type="button"
-                        className={`status-tag-pill ${selectedNode.status === 'learning' ? 'status-tag-pill--active' : ''}`}
-                        data-type="learning"
-                        onClick={() => handleUpdateNodeStatus('learning')}
-                      >
-                        🟡 Đang học
-                      </button>
-                      <button 
-                        type="button"
-                        className={`status-tag-pill ${selectedNode.status === 'learned' ? 'status-tag-pill--active' : ''}`}
-                        data-type="learned"
-                        onClick={() => handleUpdateNodeStatus('learned')}
-                      >
-                        🟢 Đã hiểu
-                      </button>
-                      <button 
-                        type="button"
-                        className={`status-tag-pill ${selectedNode.status === 'review' ? 'status-tag-pill--active' : ''}`}
-                        data-type="review"
-                        onClick={() => handleUpdateNodeStatus('review')}
-                      >
-                        🔴 Cần ôn lại
-                      </button>
-                      <button 
-                        type="button"
-                        className={`status-tag-pill ${selectedNode.status === 'important' ? 'status-tag-pill--active' : ''}`}
-                        data-type="important"
-                        onClick={() => handleUpdateNodeStatus('important')}
-                      >
-                        ⭐ Quan trọng
-                      </button>
-                    </div>
-
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <button 
-                        className="flashcard-header-btn" 
-                        onClick={handleUpdateNode}
-                        style={{ background: 'var(--fc-gold)', color: '#12120e', border: 'none', padding: '8px 12px', fontSize: '11px', fontWeight: 'bold', cursor: 'pointer', flex: 1, borderRadius: '8px' }}
-                      >
-                        Cập nhật
-                      </button>
-                      {selectedNode.id !== '0' && (
-                        <button 
-                          className="flashcard-header-btn" 
-                          onClick={handleDeleteNode}
-                          style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.2)', padding: '8px 12px', fontSize: '11px', cursor: 'pointer', flex: 1, borderRadius: '8px' }}
-                        >
-                          Xóa nút
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="manual-section" style={{ borderTop: '1px solid var(--border)', paddingTop: '14px' }}>
-                    <h5 style={{ color: 'var(--fc-gold)', fontSize: '11px', fontWeight: 'bold', margin: '0 0 10px 0', display: 'flex', alignItems: 'center', gap: '6px', letterSpacing: '0.5px', textTransform: 'uppercase' }}>
-                      ➕ Thêm ý con vào nhánh
-                    </h5>
-                    
-                    <input 
-                      type="text"
-                      className="flashcard-modal-input"
-                      style={{ background: '#141410', width: '100%', marginBottom: '8px', fontSize: '12px', padding: '8px 10px', height: '36px', boxSizing: 'border-box' }}
-                      placeholder="Nhập tiêu đề ý con..."
-                      value={newChildName}
-                      onChange={(e) => setNewChildName(e.target.value)}
-                    />
-                    <textarea 
-                      className="flashcard-modal-textarea"
-                      style={{ background: '#141410', width: '100%', marginBottom: '8px', fontSize: '12px', padding: '8px 10px', boxSizing: 'border-box' }}
-                      placeholder="Nhập tóm tắt mô tả..."
-                      value={newChildDesc}
-                      onChange={(e) => setNewChildDesc(e.target.value)}
-                      rows={2}
-                    />
-                    <button 
-                      className="flashcard-header-btn" 
-                      onClick={handleAddChildNode}
-                      style={{ background: 'transparent', borderColor: 'var(--border)', padding: '8px 12px', fontSize: '11.5px', cursor: 'pointer', width: '100%', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}
-                    >
-                      <HiPlus /> Thêm nút con
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div style={{
-                  textAlign: 'center',
-                  padding: '24px 12px',
-                  fontSize: '11.5px',
-                  color: '#ffffff',
-                  border: '1px dashed var(--border)',
-                  borderRadius: '12px',
-                  background: 'rgba(0,0,0,0.1)',
-                  lineHeight: '1.5'
-                }}>
-                  🖱️ Hãy chọn một nút bất kỳ trên sơ đồ để bắt đầu chỉnh sửa hoặc thêm nhánh con mới.
-                </div>
-              )}
-            </div>
-          )}
 
           {/* History Saved Panel */}
           {activeTab === 'history' && (
@@ -2280,42 +2195,27 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
                     {isFullscreen ? '🔍 Hiện Sidebar' : '🧘 Tập trung'}
                   </button>
 
-                  <button 
-                    className="canvas-action-pill"
-                    onClick={handleGenerateWeaknessMindmap}
-                    disabled={isGeneratingWeakness}
-                    style={{
-                      background: 'rgba(239, 68, 68, 0.12)',
-                      borderColor: 'rgba(239, 68, 68, 0.3)',
-                      color: '#EF4444'
-                    }}
-                    title="Phân tích lỗi sai & tạo sơ đồ lấp lỗ hổng kiến thức"
-                  >
-                    {isGeneratingWeakness ? (
-                      <><span className="spinner-mini" style={{ display: 'inline-block', width: '10px', height: '10px', border: '2px solid #ef4444', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.6s linear infinite', marginRight: '4px' }} /> Đang tạo...</>
-                    ) : (
-                      <>⚡ Sơ đồ vùng yếu</>
-                    )}
-                  </button>
 
-                  <button 
-                    className="canvas-action-pill"
-                    onClick={() => {
-                      setIsExamModalOpen(true);
-                      setExamText('');
-                      setExamFileUrl('');
-                      setExamFileType('');
-                      setUploadedFileId(null);
-                    }}
-                    style={{
-                      background: 'rgba(59, 130, 246, 0.12)',
-                      borderColor: 'rgba(59, 130, 246, 0.3)',
-                      color: '#3B82F6'
-                    }}
-                    title="Tải lên đề thi (PDF, DOCX, Ảnh) để lập sơ đồ cấu trúc chủ đề"
-                  >
-                    📝 Sơ đồ đề thi
-                  </button>
+
+                  {autosaveStatus && (
+                    <span 
+                      style={{ 
+                        fontSize: '11.5px', 
+                        color: autosaveStatus === 'saving' ? '#fbbf24' : '#34d399', 
+                        display: 'inline-flex', 
+                        alignItems: 'center', 
+                        gap: '4px', 
+                        background: autosaveStatus === 'saving' ? 'rgba(251, 191, 36, 0.1)' : 'rgba(52, 211, 153, 0.1)', 
+                        padding: '6px 12px', 
+                        borderRadius: '20px',
+                        border: autosaveStatus === 'saving' ? '1px solid rgba(251, 191, 36, 0.2)' : '1px solid rgba(52, 211, 153, 0.2)',
+                        fontWeight: '600',
+                        marginRight: '4px'
+                      }}
+                    >
+                      {autosaveStatus === 'saving' ? '⏳ Đang tự động lưu...' : '✅ Đã lưu tự động'}
+                    </span>
+                  )}
 
                   <button 
                     className="canvas-action-pill" 
@@ -2347,6 +2247,31 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
                 </>
               )}
               
+              {/* Help button "?" */}
+              <button 
+                className="canvas-action-pill help-btn"
+                onClick={() => setShowHelpModal(true)}
+                title="Hướng dẫn"
+                style={{
+                  width: '34px',
+                  height: '34px',
+                  borderRadius: '50%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '16px',
+                  fontWeight: '900',
+                  background: 'rgba(255, 255, 255, 0.15)',
+                  border: '1px solid rgba(255, 255, 255, 0.25)',
+                  color: '#ffffff',
+                  cursor: 'pointer',
+                  padding: 0,
+                  transition: 'all 0.2s',
+                  marginLeft: '4px'
+                }}
+              >
+                ?
+              </button>
             </div>
           </div>
 
@@ -2354,11 +2279,29 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
           {viewMode === 'outline' ? (
             <div className="aitutor-outline-view animate-in">
               <div className="outline-card">
-                <h3 style={{ fontSize: '15px', fontWeight: 'bold', marginBottom: '16px', color: 'var(--mm-gold)', borderBottom: '1px solid var(--mm-border-dark)', paddingBottom: '10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  📋 DÀN Ý KIẾN THỨC HỆ THỐNG HÓA
-                </h3>
+                <div style={{ fontSize: '15px', fontWeight: 'bold', marginBottom: '16px', color: 'var(--mm-gold)', borderBottom: '1px solid var(--mm-border-dark)', paddingBottom: '10px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    📋 DÀN Ý KIẾN THỨC HỆ THỐNG HÓA
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button 
+                      onClick={handleExpandAllOutline}
+                      style={{ background: 'rgba(255, 210, 52, 0.12)', border: '1px solid rgba(255, 210, 52, 0.3)', color: 'var(--mm-gold)', borderRadius: '6px', padding: '4px 10px', fontSize: '11px', cursor: 'pointer', fontWeight: '700', transition: 'all 0.2s' }}
+                      title="Mở rộng toàn bộ các cấp độ dàn ý"
+                    >
+                      👐 Mở rộng hết
+                    </button>
+                    <button 
+                      onClick={handleCollapseAllOutline}
+                      style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', color: '#475569', borderRadius: '6px', padding: '4px 10px', fontSize: '11px', cursor: 'pointer', fontWeight: '700', transition: 'all 0.2s' }}
+                      title="Thu gọn các cấp độ nhánh con"
+                    >
+                      📁 Thu gọn hết
+                    </button>
+                  </div>
+                </div>
                 {mindmapData ? renderOutlineNode(mindmapData) : (
-                  <div style={{ textAlign: 'center', color: '#ffffff', fontSize: '13px', padding: '20px' }}>
+                  <div style={{ textAlign: 'center', color: 'var(--mm-text-secondary)', fontSize: '13px', padding: '20px' }}>
                     Nhập tài liệu ở cột trái để bắt đầu lập sơ đồ
                   </div>
                 )}
@@ -2383,7 +2326,7 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
                   {/* Background grid representation */}
                   <defs>
                     <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
-                      <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#ffffff" strokeWidth="0.5" opacity="0.08" />
+                      <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#ffffff" strokeWidth="0.5" opacity="0.12" />
                     </pattern>
                   </defs>
                   <rect width="100%" height="100%" fill="url(#grid)" data-canvas-bg="true" />
@@ -2437,208 +2380,193 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
             </div>
 
             {/* Content Body scrollable */}
-            <div className="aitutor-drawer-body">
+            <div ref={drawerBodyRef} className="aitutor-drawer-body">
               {/* Node Title & Description with CRUD Edits */}
               <div className="drawer-section">
-                <label className="flashcard-modal-label" style={{ marginBottom: '4px', display: 'block', fontSize: '10px', color: '#ffffff' }}>Tên nút sơ đồ</label>
-                <input 
-                  type="text"
-                  className="flashcard-modal-input"
-                  style={{ background: '#141410', width: '100%', marginBottom: '10px', fontSize: '14.5px', fontWeight: 'bold' }}
-                  value={editNodeName}
-                  onChange={(e) => setEditNodeName(e.target.value)}
-                />
-
-                <label className="flashcard-modal-label" style={{ marginBottom: '4px', display: 'block', fontSize: '10px', color: '#ffffff' }}>Mô tả chi tiết</label>
-                <textarea 
-                  className="flashcard-modal-textarea"
-                  style={{ background: '#141410', width: '100%', marginBottom: '10px', fontSize: '13px' }}
-                  value={editNodeDesc}
-                  onChange={(e) => setEditNodeDesc(e.target.value)}
-                  rows={3}
-                />
-
-                <label className="flashcard-modal-label" style={{ marginBottom: '4px', display: 'block', fontSize: '10px', color: '#ffffff' }}>Hình dạng nút</label>
-                <select 
-                  className="flashcard-modal-input"
-                  style={{ background: '#141410', width: '100%', marginBottom: '12px', fontSize: '13.5px', color: 'var(--text-primary)', border: '1px solid var(--border)', height: '38px', borderRadius: '10px', padding: '0 10px' }}
-                  value={editNodeShape}
-                  onChange={(e) => setEditNodeShape(e.target.value)}
-                >
-                  <option value="oval">Hình Bầu Dục (Oval)</option>
-                  <option value="rectangle">Hình Chữ Nhật (Rectangle)</option>
-                  <option value="circle">Hình Tròn (Circle)</option>
-                  <option value="rhombus">Hình Thoi (Rhombus)</option>
-                </select>
-
-                <label className="flashcard-modal-label" style={{ marginBottom: '4px', display: 'block', fontSize: '10px', color: '#ffffff' }}>Trạng thái học tập</label>
-                <div className="status-tagger-group" style={{ marginBottom: '12px' }}>
-                  <button 
-                    type="button"
-                    className={`status-tag-pill ${selectedNode.status === 'none' || !selectedNode.status ? 'status-tag-pill--active' : ''}`}
-                    data-type="none"
-                    onClick={() => handleUpdateNodeStatus('none')}
-                  >
-                    Chưa học
-                  </button>
-                  <button 
-                    type="button"
-                    className={`status-tag-pill ${selectedNode.status === 'learning' ? 'status-tag-pill--active' : ''}`}
-                    data-type="learning"
-                    onClick={() => handleUpdateNodeStatus('learning')}
-                  >
-                    🟡 Đang học
-                  </button>
-                  <button 
-                    type="button"
-                    className={`status-tag-pill ${selectedNode.status === 'learned' ? 'status-tag-pill--active' : ''}`}
-                    data-type="learned"
-                    onClick={() => handleUpdateNodeStatus('learned')}
-                  >
-                    🟢 Đã hiểu
-                  </button>
-                  <button 
-                    type="button"
-                    className={`status-tag-pill ${selectedNode.status === 'review' ? 'status-tag-pill--active' : ''}`}
-                    data-type="review"
-                    onClick={() => handleUpdateNodeStatus('review')}
-                  >
-                    🔴 Cần ôn lại
-                  </button>
-                  <button 
-                    type="button"
-                    className={`status-tag-pill ${selectedNode.status === 'important' ? 'status-tag-pill--active' : ''}`}
-                    data-type="important"
-                    onClick={() => handleUpdateNodeStatus('important')}
-                  >
-                    ⭐ Quan trọng
-                  </button>
-                </div>
-
-                <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
-                  <button 
-                    className="flashcard-header-btn" 
-                    onClick={handleUpdateNode}
-                    style={{ background: 'var(--fc-gold)', color: '#12120e', border: 'none', padding: '6px 12px', fontSize: '11.5px', cursor: 'pointer' }}
-                  >
-                    Cập nhật nút
-                  </button>
-                  {selectedNode.id !== '0' && (
-                    <button 
-                      className="flashcard-header-btn" 
-                      onClick={handleDeleteNode}
-                      style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.2)', padding: '6px 12px', fontSize: '11.5px', cursor: 'pointer' }}
-                    >
-                      Xóa nút này
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Practice & Progress stats and quiz trigger */}
-              <div className="drawer-section" style={{ borderTop: '1px solid var(--border)', paddingTop: '16px', marginBottom: '16px' }}>
-                <h4 className="drawer-chat-title" style={{ marginBottom: '10px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  🎯 Luyện tập trắc nghiệm
-                </h4>
-                
-                {/* Stats cards grid */}
-                <div style={{
-                  display: 'grid',
-                  gridTemplateColumns: '1fr 1fr',
-                  gap: '8px',
-                  marginBottom: '12px'
-                }}>
-                  <div style={{
-                    background: 'rgba(255,255,255,0.02)',
-                    border: '1px solid var(--border)',
-                    borderRadius: '8px',
-                    padding: '8px',
-                    textAlign: 'center'
-                  }}>
-                    <div style={{ fontSize: '10px', color: '#ffffff' }}>Độ thành thạo</div>
-                    <div style={{
-                      fontSize: '14px',
-                      fontWeight: 'bold',
-                      color: nodeProgressMap[selectedNode.id]?.mastery !== undefined
-                        ? (nodeProgressMap[selectedNode.id].mastery >= 0.9 ? '#10B981' : nodeProgressMap[selectedNode.id].mastery >= 0.8 ? '#3B82F6' : nodeProgressMap[selectedNode.id].mastery >= 0.6 ? '#EAB308' : nodeProgressMap[selectedNode.id].mastery >= 0.4 ? '#F97316' : '#EF4444')
-                        : '#ffffff'
+                {!isEditingNode ? (
+                  // VIEW MODE
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <h3 style={{ fontSize: '16px', fontWeight: '800', color: '#ffffff', margin: '0 0 4px 0', lineHeight: '1.4' }}>
+                      {selectedNode.name}
+                    </h3>
+                    <div style={{ 
+                      fontSize: '12.5px', 
+                      color: 'rgba(255,255,255,0.75)', 
+                      lineHeight: '1.55', 
+                      background: 'rgba(255,255,255,0.03)', 
+                      border: '1px solid rgba(255,255,255,0.07)', 
+                      borderRadius: '12px', 
+                      padding: '12px', 
+                      minHeight: '40px',
+                      wordBreak: 'break-word',
+                      whiteSpace: 'pre-wrap'
                     }}>
-                      {nodeProgressMap[selectedNode.id]?.mastery !== undefined
-                        ? `${Math.round(nodeProgressMap[selectedNode.id].mastery * 100)}%`
-                        : 'Chưa học'
-                      }
+                      {selectedNode.description || "Nút kiến thức này chưa có mô tả chi tiết."}
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                      <button 
+                        className="flashcard-header-btn" 
+                        onClick={() => setIsEditingNode(true)}
+                        style={{ background: 'rgba(255,255,255,0.1)', color: '#ffffff', border: '1px solid rgba(255,255,255,0.15)', padding: '6px 12px', fontSize: '11.5px', cursor: 'pointer', borderRadius: '8px', flex: 1, fontWeight: '700' }}
+                      >
+                        ✏️ Chỉnh sửa
+                      </button>
+                      {selectedNode.id !== '0' && (
+                        <button 
+                          className="flashcard-header-btn" 
+                          onClick={handleDeleteNode}
+                          style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.2)', padding: '6px 12px', fontSize: '11.5px', cursor: 'pointer', borderRadius: '8px', fontWeight: '700' }}
+                          title="Xóa nút này"
+                        >
+                          🗑️ Xóa
+                        </button>
+                      )}
                     </div>
                   </div>
-                  <div style={{
-                    background: 'rgba(255,255,255,0.02)',
-                    border: '1px solid var(--border)',
-                    borderRadius: '8px',
-                    padding: '8px',
-                    textAlign: 'center'
-                  }}>
-                    <div style={{ fontSize: '10px', color: '#ffffff' }}>Điểm cao nhất</div>
-                    <div style={{ fontSize: '14px', fontWeight: 'bold', color: 'var(--fc-gold)' }}>
-                      {nodeProgressMap[selectedNode.id]?.bestScore !== undefined
-                        ? `${nodeProgressMap[selectedNode.id].bestScore}/10`
-                        : '- / 10'
-                      }
+                ) : (
+                  // EDIT MODE
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    <div>
+                      <label className="flashcard-modal-label" style={{ marginBottom: '4px', display: 'block', fontSize: '10.5px', color: 'rgba(255,255,255,0.6)', fontWeight: 'bold' }}>Tên nút sơ đồ</label>
+                      <input 
+                        type="text"
+                        className="flashcard-modal-input"
+                        style={{ background: '#141410', width: '100%', fontSize: '13.5px', fontWeight: 'bold', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', height: '36px', padding: '0 10px', boxSizing: 'border-box', color: '#ffffff' }}
+                        value={editNodeName}
+                        onChange={(e) => setEditNodeName(e.target.value)}
+                      />
                     </div>
+
+                    <div>
+                      <label className="flashcard-modal-label" style={{ marginBottom: '4px', display: 'block', fontSize: '10.5px', color: 'rgba(255,255,255,0.6)', fontWeight: 'bold' }}>Mô tả chi tiết</label>
+                      <textarea 
+                        className="flashcard-modal-textarea"
+                        style={{ background: '#141410', width: '100%', fontSize: '12.5px', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', padding: '8px 10px', boxSizing: 'border-box', color: '#ffffff' }}
+                        value={editNodeDesc}
+                        onChange={(e) => setEditNodeDesc(e.target.value)}
+                        rows={3}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="flashcard-modal-label" style={{ marginBottom: '4px', display: 'block', fontSize: '10.5px', color: 'rgba(255,255,255,0.6)', fontWeight: 'bold' }}>Hình dạng nút</label>
+                      <select 
+                        className="flashcard-modal-input"
+                        style={{ background: '#141410', width: '100%', fontSize: '13px', color: '#ffffff', border: '1px solid rgba(255,255,255,0.1)', height: '36px', borderRadius: '10px', padding: '0 8px', boxSizing: 'border-box' }}
+                        value={editNodeShape}
+                        onChange={(e) => setEditNodeShape(e.target.value)}
+                      >
+                        <option value="oval">Hình Bầu Dục (Oval)</option>
+                        <option value="rectangle">Hình Chữ Nhật (Rectangle)</option>
+                        <option value="circle">Hình Tròn (Circle)</option>
+                        <option value="rhombus">Hình Thoi (Rhombus)</option>
+                      </select>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                      <button 
+                        className="flashcard-header-btn" 
+                        onClick={async () => {
+                          await handleUpdateNode();
+                          setIsEditingNode(false);
+                        }}
+                        style={{ background: 'var(--mm-gold)', color: '#12120e', border: 'none', padding: '8px 12px', fontSize: '11.5px', fontWeight: 'bold', cursor: 'pointer', flex: 1, borderRadius: '8px' }}
+                      >
+                        Lưu lại
+                      </button>
+                      <button 
+                        className="flashcard-header-btn" 
+                        onClick={() => {
+                          setEditNodeName(selectedNode.name || '');
+                          setEditNodeDesc(selectedNode.description || '');
+                          setEditNodeShape(selectedNode.shape || 'oval');
+                          setIsEditingNode(false);
+                        }}
+                        style={{ background: 'rgba(255,255,255,0.08)', color: '#ffffff', border: '1px solid rgba(255,255,255,0.12)', padding: '8px 12px', fontSize: '11.5px', cursor: 'pointer', borderRadius: '8px' }}
+                      >
+                        Hủy
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', marginTop: '16px', paddingTop: '12px' }}>
+                  <label className="flashcard-modal-label" style={{ marginBottom: '6px', display: 'block', fontSize: '10.5px', color: 'rgba(255,255,255,0.6)', fontWeight: 'bold' }}>Trạng thái học tập</label>
+                  <div className="status-tagger-group" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                    <button 
+                      type="button"
+                      className={`status-tag-pill ${selectedNode.status === 'none' || !selectedNode.status ? 'status-tag-pill--active' : ''}`}
+                      onClick={() => handleUpdateNodeStatus('none')}
+                      style={{ padding: '4px 8px', fontSize: '11px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.1)', background: selectedNode.status === 'none' || !selectedNode.status ? 'rgba(255,255,255,0.15)' : 'transparent', color: '#ffffff', cursor: 'pointer' }}
+                    >
+                      ⚪ Chưa học
+                    </button>
+                    <button 
+                      type="button"
+                      className={`status-tag-pill ${selectedNode.status === 'learning' ? 'status-tag-pill--active' : ''}`}
+                      onClick={() => handleUpdateNodeStatus('learning')}
+                      style={{ padding: '4px 8px', fontSize: '11px', borderRadius: '6px', border: '1px solid rgba(245, 158, 11, 0.3)', background: selectedNode.status === 'learning' ? 'rgba(245, 158, 11, 0.2)' : 'transparent', color: '#f59e0b', cursor: 'pointer' }}
+                    >
+                      ⚡ Đang học
+                    </button>
+                    <button 
+                      type="button"
+                      className={`status-tag-pill ${selectedNode.status === 'learned' ? 'status-tag-pill--active' : ''}`}
+                      onClick={() => handleUpdateNodeStatus('learned')}
+                      style={{ padding: '4px 8px', fontSize: '11px', borderRadius: '6px', border: '1px solid rgba(16, 185, 129, 0.3)', background: selectedNode.status === 'learned' ? 'rgba(16, 185, 129, 0.2)' : 'transparent', color: '#10b981', cursor: 'pointer' }}
+                    >
+                      ✓ Đã hiểu
+                    </button>
+                    <button 
+                      type="button"
+                      className={`status-tag-pill ${selectedNode.status === 'review' ? 'status-tag-pill--active' : ''}`}
+                      onClick={() => handleUpdateNodeStatus('review')}
+                      style={{ padding: '4px 8px', fontSize: '11px', borderRadius: '6px', border: '1px solid rgba(239, 68, 68, 0.3)', background: selectedNode.status === 'review' ? 'rgba(239, 68, 68, 0.2)' : 'transparent', color: '#ef4444', cursor: 'pointer' }}
+                    >
+                      ⏳ Cần ôn lại
+                    </button>
+                    <button 
+                      type="button"
+                      className={`status-tag-pill ${selectedNode.status === 'important' ? 'status-tag-pill--active' : ''}`}
+                      onClick={() => handleUpdateNodeStatus('important')}
+                      style={{ padding: '4px 8px', fontSize: '11px', borderRadius: '6px', border: '1px solid rgba(217, 70, 239, 0.3)', background: selectedNode.status === 'important' ? 'rgba(217, 70, 239, 0.2)' : 'transparent', color: '#d946ef', cursor: 'pointer' }}
+                    >
+                      ⭐ Quan trọng
+                    </button>
                   </div>
                 </div>
-
-                <button 
-                  className="aitutor-action-btn" 
-                  onClick={handleStartNodeQuiz}
-                  style={{
-                    width: '100%',
-                    padding: '10px',
-                    fontSize: '12.5px',
-                    background: 'linear-gradient(135deg, #F97316, #FFE259)',
-                    boxShadow: '0 4px 12px rgba(249, 115, 22, 0.25)',
-                    border: 'none',
-                    borderRadius: '10px',
-                    fontWeight: '800',
-                    color: '#12120e',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '6px'
-                  }}
-                >
-                  <HiSparkles /> Bắt đầu Quiz 10 câu
-                </button>
               </div>
+
+
 
               {/* Add Child Node Form */}
-              <div className="drawer-section" style={{ borderTop: '1px solid var(--border)', paddingTop: '16px', marginBottom: '16px' }}>
+              <div className="drawer-section" style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '16px', marginBottom: '16px' }}>
                 <h4 className="drawer-chat-title" style={{ marginBottom: '10px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  ➕ Thêm ý con vào nhánh này
+                  ➕ Thêm ý con nhanh
                 </h4>
-                
-                <input 
-                  type="text"
-                  className="flashcard-modal-input"
-                  style={{ background: '#141410', width: '100%', marginBottom: '8px', fontSize: '12px', padding: '8px 10px' }}
-                  placeholder="Nhập tiêu đề ý con..."
-                  value={newChildName}
-                  onChange={(e) => setNewChildName(e.target.value)}
-                />
-                <textarea 
-                  className="flashcard-modal-textarea"
-                  style={{ background: '#141410', width: '100%', marginBottom: '8px', fontSize: '12px', padding: '8px 10px' }}
-                  placeholder="Nhập tóm tắt mô tả..."
-                  value={newChildDesc}
-                  onChange={(e) => setNewChildDesc(e.target.value)}
-                  rows={2}
-                />
-                <button 
-                  className="flashcard-header-btn" 
-                  onClick={handleAddChildNode}
-                  style={{ background: 'transparent', borderColor: 'var(--border)', padding: '6px 12px', fontSize: '11.5px', cursor: 'pointer' }}
-                >
-                  <HiPlus style={{ marginRight: '4px' }} /> Thêm nút con
-                </button>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input 
+                    type="text"
+                    className="flashcard-modal-input"
+                    style={{ flex: 1, background: '#141410', fontSize: '12.5px', padding: '8px 12px', height: '38px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.1)', boxSizing: 'border-box', color: '#ffffff' }}
+                    placeholder="Thêm ý con nhanh..."
+                    value={newChildName}
+                    onChange={(e) => setNewChildName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && newChildName.trim()) {
+                        handleAddChildNode();
+                      }
+                    }}
+                  />
+                  <button 
+                    className="aitutor-action-btn"
+                    style={{ width: '38px', height: '38px', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '10px', background: 'var(--mm-gold)', border: 'none', cursor: 'pointer' }}
+                    onClick={handleAddChildNode}
+                    disabled={!newChildName.trim()}
+                  >
+                    <HiPlus style={{ fontSize: '18px', color: '#12120e' }} />
+                  </button>
+                </div>
               </div>
 
               {/* Contextual Q&A Section */}
@@ -2908,7 +2836,7 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
                         </button>
                         <button 
                           className="mm-quiz-action-btn-primary" 
-                          onClick={handleStartNodeQuiz}
+                          onClick={() => handleStartNodeQuiz(true)}
                         >
                           <HiRefresh /> Luyện tập lại
                         </button>
@@ -3050,6 +2978,50 @@ export default function AITutorPage({ currentUser, navigateTo, addLog, hideHeade
 
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Usage Instruction Help Modal */}
+      {showHelpModal && (
+        <div className="aitutor-modal-overlay" onClick={() => setShowHelpModal(false)}>
+          <div className="aitutor-modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="aitutor-modal-header">
+              <h3>💡 Hướng dẫn sử dụng Sơ đồ Tư duy AI</h3>
+              <button className="aitutor-modal-close" onClick={() => setShowHelpModal(false)}>×</button>
+            </div>
+            <div className="aitutor-modal-body">
+              <div className="help-section">
+                <h4>🚀 Khởi tạo Sơ đồ</h4>
+                <ul>
+                  <li>✍️ **Tạo bằng AI**: Nhập chủ đề hoặc đề tài vào ô trống ở cột trái và nhấn **Tạo sơ đồ**.</li>
+                  <li>📄 **Tạo từ Tài liệu**: Tải lên tập tin PDF hoặc hình ảnh đề bài để AI tự động phân tích và lập sơ đồ.</li>
+                  <li>🆕 **Tạo thủ công**: Nhấn **Tạo sơ đồ trống mới** để tự tay thiết kế sơ đồ của riêng bạn.</li>
+                </ul>
+              </div>
+
+              <div className="help-section">
+                <h4>🖱️ Thao tác trên Bản đồ</h4>
+                <ul>
+                  <li>👈 **Chọn nút**: Click chuột trái vào nút bất kỳ để xem chi tiết hoặc chỉnh sửa ở cột phải.</li>
+                  <li>➕ **Thêm nhanh**: Di chuột vào nút và click nút **(+)** để tạo ngay nút con mới.</li>
+                  <li>🔄 **Di chuyển Canvas**: Nhấp giữ chuột vào khoảng trống và kéo để di chuyển vùng làm việc.</li>
+                  <li>🔍 **Phóng to/Thu nhỏ**: Sử dụng con lăn chuột hoặc bộ điều khiển góc dưới để zoom sơ đồ.</li>
+                </ul>
+              </div>
+
+              <div className="help-section">
+                <h4>💾 Lưu trữ & Chia sẻ</h4>
+                <ul>
+                  <li>📁 **Tự động lưu**: Tất cả thay đổi được tự động sao lưu vào **Thư viện của tôi**.</li>
+                  <li>📤 **Xuất file**: Bạn có thể xuất sơ đồ sang định dạng ảnh PNG, SVG hoặc JSON chất lượng cao.</li>
+                  <li>📋 **Chế độ Dàn ý**: Nhấp **📋 Dàn ý** ở trên thanh công cụ để xem dưới dạng danh sách bài học văn bản gọn gàng.</li>
+                </ul>
+              </div>
+            </div>
+            <div className="aitutor-modal-footer">
+              <button className="aitutor-modal-btn-confirm" onClick={() => setShowHelpModal(false)}>Đã hiểu!</button>
             </div>
           </div>
         </div>

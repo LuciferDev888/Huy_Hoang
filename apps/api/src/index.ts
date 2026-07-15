@@ -10,14 +10,14 @@ import { prisma } from './lib/prisma.js';
 import { upload } from './lib/s3.js';
 
 import { login, logout, sendOtp, resendOtp, verifyOtpRegister, googleAuth, googleCompleteOnboarding, changePassword, forgotPassword, verifyResetOtp, resetPassword, requestRoleChange, getRoleChangeRequests, reviewRoleChange, refreshToken, getMe, registerAffiliate, updateProfile } from './controllers/auth.js';
-import { getCourses, getCourseById, createCourse, getCourseStats, updateCourse, deleteCourse, updateLesson, deleteLesson, createLesson } from './controllers/course.js';
+import { getCourses, getCourseById, createCourse, getCourseStats, updateCourse, deleteCourse, updateLesson, deleteLesson, createLesson, createCourseReview, aiSearchCourses } from './controllers/course.js';
 import { getExams, getExamById, startAttempt, saveAnswer, submitAttempt, getAttempts, getExamQuestionsPublic, getAttemptById, getAttemptResult, getExamHistory, recordViolation, recordExamEvent, getExamEvents, recordViolationDetail, generateAiCoach, createSmartRetake, importExam, generateSimilarQuestion, updateExamStatus, getWrongQuestions } from './controllers/exam.js';
-import { streamAIChat, refreshRoadmap, generateAIQuestions, generateMindmap, saveMindmap, getMindmaps, getMindmapById, deleteMindmap, generateFlashcards, getPublicMindmapById, generateNodeQuiz, submitNodeQuiz, getNodeProgress, generateWeaknessMindmap, uploadExamFile, generateExamMindmap } from './controllers/ai.js';
+import { streamAIChat, refreshRoadmap, generateAIQuestions, generateMindmap, saveMindmap, getMindmaps, getMindmapById, deleteMindmap, generateFlashcards, generateFlashcardMnemonic, generateFlashcardsOCR, getPublicMindmapById, generateNodeQuiz, submitNodeQuiz, getNodeProgress, generateWeaknessMindmap, uploadExamFile, generateExamMindmap } from './controllers/ai.js';
 
 import { chatbotConsult } from './controllers/chatbot.js';
 import { getDocumentResources, getDocumentComments, addDocumentComment, getUserDocuments, createUserDocument, deleteUserDocument } from './controllers/document.js';
-import { createVNPayPayment, vnpayWebhook, sepayWebhook, checkEnrollmentStatus, checkUserProStatus, createDemoEnrollment, getPremiumPricing } from './controllers/payment.js';
-import { authenticateJWT, requireRole } from './middleware/auth.js';
+import { createVNPayPayment, vnpayWebhook, sepayWebhook, checkEnrollmentStatus, checkUserProStatus, createDemoEnrollment, getPremiumPricing, checkDocumentPurchaseStatus, createDocumentVNPayPayment, createDocumentDemoPurchase } from './controllers/payment.js';
+import { authenticateJWT, requireRole, optionalAuthenticateJWT } from './middleware/auth.js';
 import { ownsCourse, ownsLesson, ownsAttempt } from './middleware/ownership.js';
 import { rateLimiter } from './middleware/rateLimit.js';
 import { auditLogger } from './middleware/audit.js';
@@ -25,6 +25,7 @@ import { logSystemEvent } from './utils/logger.js';
 import { getAdminStats, getAdminUsers, toggleUserBan, getAdminLeads, createAdminLead, updateAdminLeadStatus, getFeatureFlags, toggleFeatureFlag, getUserDetail, blockUser, unblockUser } from './controllers/admin.js';
 import { getTeacherStats, getAdminTeachers, getTeacherDetail, createTeacherAccount, approveTeacherProfile, rejectTeacherProfile, blockTeacher, unblockTeacher } from './controllers/adminTeachers.js';
 import { getAdminCoursesStats, getAdminCourses, getAdminCourseDetail, approveCourse, rejectCourse, hideCourse, showCourse } from './controllers/adminCourses.js';
+import { getAdminTests, getAdminTestById, approveTest, rejectTest, hideTest, showTest } from './controllers/adminTests.js';
 import {
   getAdminReports,
   getAdminReportById,
@@ -38,7 +39,12 @@ import {
 import { getAdminLogs, getAdminLogById, getAdminLogsStatistics } from './controllers/adminLogs.js';
 import { getSettings, updateSettings } from './controllers/systemSettings.js';
 import { SystemSettingService } from './services/systemSetting.service.js';
+import notificationRoutes from './routes/notification.routes.js';
+import { NotificationTemplateService } from './services/notificationTemplate.service.js';
 import { seedSystemSettings } from './seedSettings.js';
+import voucherRoutes from './routes/voucher.routes.js';
+import { VoucherService } from './services/voucher.service.js';
+import announcementRoutes from './routes/announcement.routes.js';
 
 import {
   getLeaderboardRankings,
@@ -49,6 +55,12 @@ import {
   getHighestScoreLeaderboard
 } from './controllers/gamification.js';
 import { getTeacherStats as getTeacherDashboardStats } from './controllers/teacher.js';
+import {
+  getScoreLeaderboard,
+  getStreakLeaderboard,
+  getCourseLeaderboard,
+  getLeaderboardTelemetry
+} from './controllers/leaderboard.js';
 
 import {
   trackClick,
@@ -83,18 +95,21 @@ import {
   downloadMaterial,
   getAdminPendingMaterials,
   approveMaterial,
-  rejectMaterial
+  rejectMaterial,
+  getAdminMaterials,
+  hideMaterial
 } from './controllers/material.js';
 
-import { uploadValidation } from './middleware/upload.js';
+import { uploadValidation, teacherMaterialUploadValidation } from './middleware/upload.js';
+import { getRatings, submitOrUpdateRating, hideRating } from './controllers/rating.js';
 import {
   getCategories, createCategory, deleteCategory,
-  getPosts, getPostById, createPost, deletePost, togglePinPost, reactPost,
-  getComments, createComment, acceptCommentSolution,
-  getStudyGroups, createStudyGroup, joinStudyGroup, leaveStudyGroup,
+  getPosts, getPostById, createPost, deletePost, togglePinPost, reactPost, updatePost,
+  getComments, createComment, acceptCommentSolution, reactComment,
+  getStudyGroups, createStudyGroup, joinStudyGroup, leaveStudyGroup, deleteStudyGroup,
   getGroupAnnouncements, createGroupAnnouncement,
   getLeaderboard as getForumLeaderboard, getUserGamificationProfile,
-  downloadResource, createReport, getReports, resolveReport
+  downloadResource, createReport, getReports, resolveReport, toggleSavePost
 } from './controllers/forum.js';
 import { initCronJobs } from './cron/index.js';
 // Environment variables are loaded at the top of the file via import './env.js'
@@ -204,6 +219,36 @@ app.post('/upload', authenticateJWT, upload.single('file'), (req, res) => {
   });
 });
 
+
+// File Delete Route
+app.post('/upload/delete', authenticateJWT, (req, res) => {
+  const { url } = req.body;
+  if (!url) {
+    return res.status(400).json({ success: false, error: 'Thiếu đường dẫn tệp cần xóa!' });
+  }
+
+  try {
+    const parsedUrl = new URL(url, `${req.protocol}://${req.get('host')}`);
+    const pathname = parsedUrl.pathname;
+    
+    if (pathname.startsWith('/uploads/')) {
+      const filename = pathname.substring(9);
+      if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+        return res.status(400).json({ success: false, error: 'Tên tệp không hợp lệ!' });
+      }
+
+      const filePath = path.join(resolvedUploadsDir, filename);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        return res.status(200).json({ success: true, message: 'Xóa tệp tin thành công!' });
+      }
+    }
+    return res.status(404).json({ success: false, error: 'Không tìm thấy tệp tin hoặc tệp không được lưu cục bộ!' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Role Change Routes
 app.post('/auth/role-change-request', authenticateJWT, requestRoleChange);
 app.get('/admin/role-change-requests', authenticateJWT, requireRole(['ADMIN']), getRoleChangeRequests);
@@ -249,11 +294,21 @@ app.patch('/admin/courses/:id/reject', authenticateJWT, requireRole(['ADMIN']), 
 app.patch('/admin/courses/:id/hide', authenticateJWT, requireRole(['ADMIN']), hideCourse);
 app.patch('/admin/courses/:id/show', authenticateJWT, requireRole(['ADMIN']), showCourse);
 
+// Admin Exam Management Routes
+app.get('/admin/tests', authenticateJWT, requireRole(['ADMIN']), getAdminTests);
+app.get('/admin/tests/:id', authenticateJWT, requireRole(['ADMIN']), getAdminTestById);
+app.put('/admin/tests/:id/approve', authenticateJWT, requireRole(['ADMIN']), approveTest);
+app.put('/admin/tests/:id/reject', authenticateJWT, requireRole(['ADMIN']), rejectTest);
+app.put('/admin/tests/:id/hide', authenticateJWT, requireRole(['ADMIN']), hideTest);
+app.put('/admin/tests/:id/show', authenticateJWT, requireRole(['ADMIN']), showTest);
+
 
 // Protected Course Routes
 app.get('/courses', getCourses);
+app.post('/courses/ai-search', authenticateJWT, aiSearchCourses);
 app.get('/courses/:id', getCourseById);
 app.get('/courses/:id/stats', getCourseStats);
+app.post('/courses/:id/reviews', authenticateJWT, createCourseReview);
 app.post('/courses', authenticateJWT, requireRole(['TEACHER', 'ADMIN']), createCourse);
 app.put('/courses/:id', authenticateJWT, requireRole(['TEACHER', 'ADMIN']), ownsCourse, updateCourse);
 app.delete('/courses/:id', authenticateJWT, requireRole(['TEACHER', 'ADMIN']), ownsCourse, deleteCourse);
@@ -262,7 +317,7 @@ app.delete('/lessons/:id', authenticateJWT, requireRole(['TEACHER', 'ADMIN']), o
 app.post('/lessons', authenticateJWT, requireRole(['TEACHER', 'ADMIN']), createLesson);
 
 // Document Resource Routes
-app.get('/document-resources', getDocumentResources);
+app.get('/document-resources', optionalAuthenticateJWT, getDocumentResources);
 app.get('/document-resources/:id/comments', getDocumentComments);
 app.post('/document-resources/:id/comments', authenticateJWT, addDocumentComment);
 
@@ -273,10 +328,11 @@ app.delete('/user-documents/:id', authenticateJWT, requireRole(['STUDENT', 'TEAC
 
 // Protected Exam Routes
 app.get('/exams', getExams);
-app.get('/exams/:id', getExamById);
-app.get('/exams/:id/questions', getExamQuestionsPublic);
 app.get('/exams/attempts', authenticateJWT, requireRole(['STUDENT', 'TEACHER', 'ADMIN']), getAttempts);
 app.get('/exams/attempts/:attemptId', authenticateJWT, requireRole(['STUDENT', 'TEACHER', 'ADMIN']), ownsAttempt, getAttemptById);
+app.get('/exams/wrong-questions', authenticateJWT, requireRole(['STUDENT', 'TEACHER', 'ADMIN']), getWrongQuestions);
+app.get('/exams/:id', getExamById);
+app.get('/exams/:id/questions', getExamQuestionsPublic);
 app.post('/exams/:id/attempts', authenticateJWT, requireRole(['STUDENT', 'TEACHER', 'ADMIN']), startAttempt);
 app.post('/exams/:id/attempts/:attemptId/submit', authenticateJWT, requireRole(['STUDENT', 'TEACHER', 'ADMIN']), ownsAttempt, submitAttempt);
 app.post('/exams/import', authenticateJWT, requireRole(['TEACHER', 'ADMIN']), importExam);
@@ -298,7 +354,6 @@ app.post('/exam-attempts/:attemptId/ai-coach', authenticateJWT, requireRole(['ST
 app.post('/exam-attempts/generate-similar-question', authenticateJWT, requireRole(['STUDENT', 'TEACHER', 'ADMIN']), generateSimilarQuestion);
 app.post('/exams/:id/smart-retake', authenticateJWT, requireRole(['STUDENT', 'TEACHER', 'ADMIN']), createSmartRetake);
 app.get('/users/me/exam-history', authenticateJWT, requireRole(['STUDENT', 'TEACHER', 'ADMIN']), getExamHistory);
-app.get('/exams/wrong-questions', authenticateJWT, requireRole(['STUDENT', 'TEACHER', 'ADMIN']), getWrongQuestions);
 
 // Protected Payment Routes
 app.post('/enrollments', authenticateJWT, requireRole(['STUDENT']), createVNPayPayment);
@@ -308,6 +363,11 @@ app.post('/enrollments/sepay-webhook', sepayWebhook);
 app.get('/users/pro-status', authenticateJWT, requireRole(['STUDENT']), checkUserProStatus);
 app.post('/enrollments/demo', authenticateJWT, requireRole(['STUDENT']), createDemoEnrollment);
 app.get('/enrollments/pricing', getPremiumPricing);
+
+// Protected Document Payment Routes
+app.post('/document-purchases', authenticateJWT, requireRole(['STUDENT']), createDocumentVNPayPayment);
+app.get('/document-purchases/status', authenticateJWT, requireRole(['STUDENT', 'TEACHER', 'ADMIN']), checkDocumentPurchaseStatus);
+app.post('/document-purchases/demo', authenticateJWT, requireRole(['STUDENT']), createDocumentDemoPurchase);
 
 // Protected AI Routes
 app.post('/ai/chat', (req, res, next) => {
@@ -336,6 +396,20 @@ app.post('/ai/flashcards', (req, res, next) => {
   }
   next();
 }, generateFlashcards);
+app.post('/ai/flashcards/mnemonic', (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    return authenticateJWT(req as any, res, next);
+  }
+  next();
+}, generateFlashcardMnemonic);
+app.post('/ai/flashcards/ocr', upload.single('file'), (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    return authenticateJWT(req as any, res, next);
+  }
+  next();
+}, generateFlashcardsOCR);
 app.post('/mindmaps', authenticateJWT, saveMindmap);
 app.get('/mindmaps', authenticateJWT, getMindmaps);
 app.get('/mindmaps/:id', authenticateJWT, getMindmapById);
@@ -359,21 +433,25 @@ app.get('/forum/categories', getCategories);
 app.post('/forum/categories', authenticateJWT, requireRole(['ADMIN']), createCategory);
 app.delete('/forum/categories/:id', authenticateJWT, requireRole(['ADMIN']), deleteCategory);
 
-app.get('/forum/posts', getPosts);
-app.get('/forum/posts/:id', getPostById);
+app.get('/forum/posts', optionalAuthenticateJWT, getPosts);
+app.get('/forum/posts/:id', optionalAuthenticateJWT, getPostById);
 app.post('/forum/posts', authenticateJWT, createPost);
+app.put('/forum/posts/:id', authenticateJWT, updatePost);
 app.delete('/forum/posts/:id', authenticateJWT, deletePost);
 app.put('/forum/posts/:id/pin', authenticateJWT, requireRole(['TEACHER', 'ADMIN']), togglePinPost);
 app.post('/forum/posts/:id/react', authenticateJWT, reactPost);
+app.post('/forum/posts/:id/save', authenticateJWT, toggleSavePost);
 
-app.get('/forum/posts/:postId/comments', getComments);
+app.get('/forum/posts/:postId/comments', optionalAuthenticateJWT, getComments);
 app.post('/forum/posts/:postId/comments', authenticateJWT, createComment);
 app.put('/forum/comments/:id/accept', authenticateJWT, acceptCommentSolution);
+app.post('/forum/comments/:id/react', authenticateJWT, reactComment);
 
 app.get('/forum/study-groups', authenticateJWT, getStudyGroups);
 app.post('/forum/study-groups', authenticateJWT, createStudyGroup);
 app.post('/forum/study-groups/:id/join', authenticateJWT, joinStudyGroup);
 app.post('/forum/study-groups/:id/leave', authenticateJWT, leaveStudyGroup);
+app.delete('/forum/study-groups/:id', authenticateJWT, deleteStudyGroup);
 app.get('/forum/study-groups/:id/announcements', authenticateJWT, getGroupAnnouncements);
 app.post('/forum/study-groups/:id/announcements', authenticateJWT, createGroupAnnouncement);
 
@@ -382,6 +460,20 @@ app.get('/forum/gamification/profile', authenticateJWT, getUserGamificationProfi
 
 app.get('/v1/leaderboard', authenticateJWT, getLeaderboardRankings);
 app.get('/v1/users/:id/activity-heatmap', authenticateJWT, getActivityHeatmap);
+
+app.get('/leaderboard/scores', getScoreLeaderboard);
+app.get('/leaderboard/streaks', getStreakLeaderboard);
+app.get('/leaderboard/courses', getCourseLeaderboard);
+app.get('/leaderboard/telemetry', getLeaderboardTelemetry);
+app.post('/leaderboard/trigger-weekly-email', async (req, res) => {
+  try {
+    const { sendAllWeeklyPraiseEmails } = await import('./cron/weeklyPraiseEmail.js');
+    await sendAllWeeklyPraiseEmails();
+    return res.status(200).json({ success: true, message: 'Đã kích hoạt gửi email tuyên dương!' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 app.post('/gamification/attendance', authenticateJWT, recordAttendance);
 app.get('/gamification/attendance', authenticateJWT, getAttendanceHistory);
@@ -392,6 +484,15 @@ app.post('/forum/resources/:id/download', downloadResource);
 app.post('/forum/moderation/reports', authenticateJWT, createReport);
 app.get('/forum/moderation/reports', authenticateJWT, requireRole(['ADMIN']), getReports);
 app.put('/forum/moderation/reports/:id/resolve', authenticateJWT, requireRole(['ADMIN']), resolveReport);
+
+// Notification Center Router
+app.use('/notifications', notificationRoutes);
+
+// Voucher Management Router
+app.use('/', voucherRoutes);
+
+// Announcement Popup Router
+app.use('/', announcementRoutes);
 
 // =========================================================================
 // AFFILIATE SYSTEM ROUTING
@@ -436,7 +537,7 @@ app.post('/admin/reports/:id/warning', authenticateJWT, requireRole(['ADMIN']), 
 // Teacher side
 app.get('/teacher/stats', authenticateJWT, requireRole(['TEACHER']), getTeacherDashboardStats);
 app.get('/teacher/materials', authenticateJWT, requireRole(['TEACHER']), getTeacherMaterials);
-app.post('/teacher/materials', authenticateJWT, requireRole(['TEACHER']), uploadValidation, createTeacherMaterial);
+app.post('/teacher/materials', authenticateJWT, requireRole(['TEACHER']), teacherMaterialUploadValidation, createTeacherMaterial);
 app.put('/teacher/materials/:id', authenticateJWT, requireRole(['TEACHER']), updateTeacherMaterial);
 app.delete('/teacher/materials/:id', authenticateJWT, requireRole(['TEACHER']), deleteTeacherMaterial);
 app.post('/teacher/materials/:id/submit', authenticateJWT, requireRole(['TEACHER']), submitTeacherMaterial);
@@ -447,14 +548,22 @@ app.get('/materials/:id', getMaterialDetail);
 app.post('/materials/:id/download', downloadMaterial);
 
 // Admin side
+app.get('/admin/materials', authenticateJWT, requireRole(['ADMIN']), getAdminMaterials);
 app.get('/admin/materials/pending', authenticateJWT, requireRole(['ADMIN']), getAdminPendingMaterials);
-app.post('/admin/materials/:id/approve', authenticateJWT, requireRole(['ADMIN']), approveMaterial);
-app.post('/admin/materials/:id/reject', authenticateJWT, requireRole(['ADMIN']), rejectMaterial);
+app.patch('/admin/materials/:id/approve', authenticateJWT, requireRole(['ADMIN']), approveMaterial);
+app.patch('/admin/materials/:id/reject', authenticateJWT, requireRole(['ADMIN']), rejectMaterial);
+app.patch('/admin/materials/:id/hide', authenticateJWT, requireRole(['ADMIN']), hideMaterial);
+
+// Ratings and Reviews
+app.get('/document-resources/:id/ratings', optionalAuthenticateJWT, getRatings);
+app.post('/document-resources/:id/rating', authenticateJWT, submitOrUpdateRating);
+app.patch('/ratings/:id/hide', authenticateJWT, hideRating);
 
 // Root Hello check
 app.get('/', (req, res) => {
   res.json({ success: true, data: "EduPath API Server is online!" });
 });
+
 
 // Dev reset endpoint for automation
 app.post('/dev/reset', async (req, res) => {
@@ -523,6 +632,8 @@ async function seedDefaultCategories() {
 
 // Auto-seed on startup
 seedDefaultCategories();
+NotificationTemplateService.seedDefaultTemplates();
+VoucherService.seedDefaultVouchers();
 
 // Global Error Handler Middleware to catch exceptions and log them
 app.use((err: any, req: any, res: any, next: any) => {

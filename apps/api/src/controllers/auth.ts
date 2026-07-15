@@ -10,6 +10,7 @@ import { sendOTPEmail, sendResetPasswordEmail, sendResetPasswordOTPEmail, sendRo
 import { isDisposableEmail, isValidEmailFormat } from '../lib/disposable-domains.js';
 import { checkOtpSendRateLimit, recordOtpSend, checkResendCooldown, recordResendCooldown } from '../lib/rate-limiter.js';
 import { logSystemEvent } from '../utils/logger.js';
+import { NotificationService } from '../services/notification.service.js';
 
 if (!process.env.JWT_SECRET) {
   throw new Error('FATAL: JWT_SECRET environment variable is missing!');
@@ -309,7 +310,7 @@ export async function sendOtp(req: Request, res: Response) {
     return res.status(400).json({ success: false, error: 'Hệ thống hiện đang tạm dừng đăng ký tài khoản.' });
   }
 
-  const { email, fullName, password, role, subjectGroup, bio, phone, referralCode } = req.body;
+  const { email, fullName, password, role, subjectGroup, bio, phone, referralCode, grade } = req.body;
 
   if (!email || !password || !fullName) {
     return res.status(400).json({ success: false, error: 'Vui lòng điền đầy đủ thông tin.' });
@@ -381,7 +382,7 @@ export async function sendOtp(req: Request, res: Response) {
         email: email.toLowerCase(),
         otpHash,
         purpose: 'REGISTRATION',
-        payload: { email, fullName, password, role, subjectGroup, bio, phone, referralCode },
+        payload: { email, fullName, password, role, subjectGroup, bio, phone, referralCode, grade },
         expiresAt: new Date(Date.now() + OTP_TTL_MS)
       }
     });
@@ -391,9 +392,10 @@ export async function sendOtp(req: Request, res: Response) {
     recordResendCooldown(email);
 
     // Send email via SMTP
-    const emailSent = await sendOTPEmail(email, fullName, otp);
-
-    if (emailSent && isRealSmtpActive) {
+    if (isRealSmtpActive) {
+      sendOTPEmail(email, fullName, otp).catch(err => {
+        console.error('[Background Mail Error] Failed to send register OTP email:', err);
+      });
       return res.status(200).json({
         success: true,
         data: {
@@ -403,6 +405,7 @@ export async function sendOtp(req: Request, res: Response) {
         }
       });
     } else {
+      const emailSent = await sendOTPEmail(email, fullName, otp);
       return res.status(200).json({
         success: true,
         data: {
@@ -488,9 +491,10 @@ export async function resendOtp(req: Request, res: Response) {
     recordResendCooldown(email);
 
     // Send email
-    const emailSent = await sendOTPEmail(email, payload.fullName || email, otp);
-
-    if (emailSent && isRealSmtpActive) {
+    if (isRealSmtpActive) {
+      sendOTPEmail(email, payload.fullName || email, otp).catch(err => {
+        console.error('[Background Mail Error] Failed to resend OTP email:', err);
+      });
       return res.status(200).json({
         success: true,
         data: {
@@ -500,6 +504,7 @@ export async function resendOtp(req: Request, res: Response) {
         }
       });
     } else {
+      const emailSent = await sendOTPEmail(email, payload.fullName || email, otp);
       return res.status(200).json({
         success: true,
         data: {
@@ -582,9 +587,9 @@ export async function verifyOtpRegister(req: Request, res: Response) {
 
     // OTP is correct — create user account
     const payload = record.payload as any;
-    const { fullName, password, role, subjectGroup, bio, referralCode, phone } = payload || {};
+    const { fullName, password, role, subjectGroup, bio, referralCode, phone, grade } = payload || {};
 
-    const passwordHash = await bcrypt.hash(password, 12);
+    const passwordHash = await bcrypt.hash(password, 10);
     const assignedRole = role && ['STUDENT', 'TEACHER'].includes(role.toUpperCase())
       ? role.toUpperCase()
       : 'STUDENT';
@@ -613,7 +618,13 @@ export async function verifyOtpRegister(req: Request, res: Response) {
         }
       });
       if (assignedRole === 'STUDENT') {
-        await tx.student.create({ data: { userId: u.id, subjectGroup: subjectGroup || 'A01' } });
+        await tx.student.create({ 
+          data: { 
+            userId: u.id, 
+            subjectGroup: subjectGroup || 'A01',
+            grade: grade ? parseInt(grade) : 12
+          } 
+        });
       } else if (assignedRole === 'TEACHER') {
         await tx.teacher.create({ data: { userId: u.id, isApproved: false, bio: bio || '' } });
       }
@@ -641,6 +652,14 @@ export async function verifyOtpRegister(req: Request, res: Response) {
     });
 
     if (!user) return res.status(500).json({ success: false, error: 'Không tạo được tài khoản.' });
+
+    // Gửi thông báo chào mừng & xác minh email thành công
+    try {
+      await NotificationService.sendTemplate('WELCOME', user.id, { fullName: user.fullName });
+      await NotificationService.sendTemplate('EMAIL_VERIFIED', user.id, { email: user.email });
+    } catch (notifErr) {
+      console.error('[Notification Error] Failed to send registration notifications (OTP):', notifErr);
+    }
 
     // Cập nhật thống kê hàng tháng
     try {
@@ -881,6 +900,14 @@ export async function googleCompleteOnboarding(req: Request, res: Response) {
 
     if (!user) return res.status(500).json({ success: false, error: 'Không tạo được tài khoản.' });
 
+    // Gửi thông báo chào mừng & xác minh email thành công
+    try {
+      await NotificationService.sendTemplate('WELCOME', user.id, { fullName: user.fullName });
+      await NotificationService.sendTemplate('EMAIL_VERIFIED', user.id, { email: user.email });
+    } catch (notifErr) {
+      console.error('[Notification Error] Failed to send registration notifications (Google):', notifErr);
+    }
+
     // Cập nhật thống kê hàng tháng (Google OAuth register)
     try {
       const now = new Date();
@@ -938,7 +965,7 @@ export async function changePassword(req: Request, res: Response) {
       return res.status(400).json({ success: false, error: 'Mật khẩu cũ không chính xác!' });
     }
 
-    const passwordHash = await bcrypt.hash(newPassword, 12);
+    const passwordHash = await bcrypt.hash(newPassword, 10);
     await prisma.user.update({
       where: { id: userId },
       data: { passwordHash }
@@ -984,7 +1011,13 @@ export async function forgotPassword(req: Request, res: Response) {
     });
 
     // Send email via SMTP
-    const sent = await sendResetPasswordOTPEmail(email, user.fullName, otp);
+    if (isRealSmtpActive) {
+      sendResetPasswordOTPEmail(email, user.fullName, otp).catch(err => {
+        console.error('[Background Mail Error] Failed to send reset OTP email:', err);
+      });
+    } else {
+      await sendResetPasswordOTPEmail(email, user.fullName, otp);
+    }
 
     return res.status(200).json({
       success: true,
@@ -1161,7 +1194,7 @@ export async function resetPassword(req: Request, res: Response) {
     }
 
     // Hash and update the password
-    const passwordHash = await bcrypt.hash(password, 12);
+    const passwordHash = await bcrypt.hash(password, 10);
     await prisma.user.update({
       where: { id: userId },
       data: { passwordHash }

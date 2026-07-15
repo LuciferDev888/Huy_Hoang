@@ -4,13 +4,17 @@
    ========================================================================== */
 
 :root {
-  --mm-bg-dark: #234932;
-  --mm-card-dark: #2b593d;
-  --mm-border-dark: #000000;
+  --mm-bg-dark: #5A7C54; /* Organic Olive Green Canvas Background */
+  --mm-card-dark: #ffffff;
+  --mm-border-dark: rgba(30, 41, 59, 0.12);
   --mm-gold: #FFD234;
   --mm-text-primary: #ffffff;
   --mm-text-secondary: rgba(255, 255, 255, 0.75);
   --mm-border-focus: #ef4444;
+}
+
+button, input, select, textarea {
+  font-family: 'Inter', system-ui, sans-serif !important;
 }
 
 .aitutor-page {
@@ -262,7 +266,7 @@
 .aitutor-textarea-label {
   font-size: 11.5px;
   font-weight: 700;
-  color: var(--mm-text-secondary);
+  color: #ffffff;
 }
 
 .aitutor-textarea {
@@ -270,7 +274,7 @@
   max-height: 240px;
   border: 1px solid var(--mm-border-dark);
   background: rgba(0,0,0,0.15);
-  color: var(--mm-text-primary);
+  color: #ffffff;
   border-radius: 10px;
   padding: 10px 12px;
   font-size: 12px;
@@ -279,6 +283,10 @@
   resize: vertical;
   line-height: 1.5;
   transition: all 0.2s;
+}
+
+.aitutor-textarea::placeholder {
+  color: rgba(255, 255, 255, 0.6);
 }
 
 .aitutor-textarea:focus {
@@ -510,59 +518,64 @@
 
 .aitutor-canvas-controls {
   position: absolute;
-  bottom: 20px;
-  left: 20px;
-  background: #ffffff;
-  border: 2px solid #000000;
-  padding: 5px;
-  border-radius: 8px;
-  box-shadow: 4px 4px 0px #000000;
+  bottom: 24px;
+  left: 24px;
+  background: rgba(43, 89, 61, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 6px;
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
   display: flex;
-  gap: 4px;
+  gap: 6px;
   z-index: 10;
 }
 
 .control-btn {
-  padding: 6px 10px;
+  padding: 8px 12px;
   background: transparent;
   border: none;
-  border-radius: 4px;
-  color: #000000;
+  border-radius: 10px;
+  color: var(--mm-text-primary);
   font-size: 11.5px;
-  font-weight: 800;
+  font-weight: 700;
   cursor: pointer;
   display: flex;
   align-items: center;
   gap: 6px;
-  transition: all 0.15s ease;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .control-btn:hover {
   background: var(--mm-gold);
-  color: #000000;
+  color: #12120e;
 }
 
 .canvas-action-pill {
-  padding: 6px 12px;
-  background: #ffffff;
-  color: #000000;
-  border: 2px solid #000000;
-  border-radius: 8px;
+  padding: 8px 14px;
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--mm-text-primary);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
   font-size: 11.5px;
-  font-weight: 800;
-  box-shadow: 2px 2px 0px #000000;
+  font-weight: 700;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   cursor: pointer;
   display: flex;
   align-items: center;
   gap: 6px;
-  transition: all 0.15s ease;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .canvas-action-pill:hover {
   background: var(--mm-gold);
-  color: #000000;
-  transform: translate(-1px, -1px);
-  box-shadow: 3px 3px 0px #000000;
+  color: #12120e;
+  border-color: var(--mm-gold);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(255, 210, 52, 0.35);
 }
 
 .canvas-export-dropdown {
@@ -616,44 +629,48 @@
 .canvas-node-card {
   box-sizing: border-box;
   font-family: 'Inter', system-ui, sans-serif;
-  border: 2.5px solid #000000 !important;
-  color: #000000 !important;
-  box-shadow: 4px 4px 0px #000000 !important;
-  border-radius: 12px !important;
-  transition: transform 0.15s cubic-bezier(0.175, 0.885, 0.32, 1.275), box-shadow 0.15s, background-color 0.15s !important;
+  border: 2px solid rgba(255, 255, 255, 0.08) !important;
+  color: #1e293b !important;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15) !important;
+  border-radius: 16px !important;
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s, border-color 0.25s !important;
 }
 
 .canvas-node-card:hover {
-  transform: translate(-3px, -3px) !important;
-  box-shadow: 7px 7px 0px #000000 !important;
+  transform: translateY(-2px) scale(1.03) !important;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22) !important;
   filter: brightness(1.03);
 }
 
 .canvas-node-card--selected {
-  transform: translate(-2px, -2px) !important;
-  box-shadow: 6px 6px 0px var(--mm-gold) !important;
-  border: 3px solid #000000 !important;
+  transform: translateY(-2px) scale(1.02) !important;
+  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.28) !important;
+  outline: 3px solid var(--mm-gold) !important;
+  outline-offset: 2px !important;
 }
 
 .canvas-node-card--selected:hover {
-  transform: translate(-4px, -4px) !important;
-  box-shadow: 8px 8px 0px var(--mm-gold) !important;
+  transform: translateY(-3px) scale(1.04) !important;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.32) !important;
 }
 
 /* Right slide-in drawer details */
 .aitutor-drawer {
   position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
+  top: 20px;
+  right: 20px;
+  bottom: 20px;
   width: 360px;
-  background: var(--mm-card-dark);
-  border-left: 1px solid var(--mm-border-dark);
-  box-shadow: var(--shadow-lg);
+  background: rgba(43, 89, 61, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: -10px 0 35px rgba(0, 0, 0, 0.2);
   display: flex;
   flex-direction: column;
   z-index: 100;
   overflow: hidden;
+  border-radius: 20px;
 }
 
 .aitutor-drawer-header {
@@ -661,8 +678,8 @@
   align-items: center;
   justify-content: space-between;
   padding: 16px 20px;
-  border-bottom: 1px solid var(--mm-border-dark);
-  background: rgba(0,0,0,0.15);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.15);
 }
 
 .drawer-depth-tag {
@@ -782,9 +799,9 @@
 }
 
 .drawer-msg--bot .drawer-bubble {
-  background: var(--mm-card-dark);
-  color: var(--mm-text-primary);
-  border: 1px solid var(--mm-border-dark);
+  background: #ffffff;
+  color: #1e293b;
+  border: 1px solid rgba(0, 0, 0, 0.08);
   border-top-left-radius: 2px;
 }
 
@@ -1581,6 +1598,7 @@
 /* Custom hierarchy overrides removed for uniform Neo-brutalism borders & shadows */
 .canvas-node-card-root {
   font-weight: 800 !important;
+  border: 3px double var(--mm-gold) !important;
 }
 .canvas-node-card-level1 {
   font-weight: 700 !important;
@@ -1602,28 +1620,27 @@
 }
 .node-status--learned {
   border-left: 6px solid #10B981 !important;
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.12), rgba(16, 185, 129, 0.04)) !important;
-  border: 1.5px solid #10B981 !important;
-  color: #10B981 !important;
+  border-right: 2px solid #10B981 !important;
+  border-top: 2px solid #10B981 !important;
+  border-bottom: 2px solid #10B981 !important;
 }
 .node-status--learning {
   border-left: 6px solid #F59E0B !important;
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.12), rgba(245, 158, 11, 0.04)) !important;
-  border: 1.5px solid #F59E0B !important;
-  color: #F59E0B !important;
+  border-right: 2px solid #F59E0B !important;
+  border-top: 2px solid #F59E0B !important;
+  border-bottom: 2px solid #F59E0B !important;
 }
 .node-status--review {
   border-left: 6px solid #EF4444 !important;
-  background: linear-gradient(135deg, rgba(239, 68, 68, 0.12), rgba(239, 68, 68, 0.04)) !important;
-  border: 1.5px solid #EF4444 !important;
-  color: #EF4444 !important;
+  border-right: 2px solid #EF4444 !important;
+  border-top: 2px solid #EF4444 !important;
+  border-bottom: 2px solid #EF4444 !important;
 }
 .node-status--important {
   border-left: 6px solid #D946EF !important;
-  background: linear-gradient(135deg, rgba(217, 70, 239, 0.15), rgba(217, 70, 239, 0.04)) !important;
-  border: 1.5px solid #D946EF !important;
-  color: #E879F9 !important;
-  box-shadow: 0 0 10px rgba(217, 70, 239, 0.25) !important;
+  border-right: 2px solid #D946EF !important;
+  border-top: 2px solid #D946EF !important;
+  border-bottom: 2px solid #D946EF !important;
 }
 
 /* Right drawer annotation tag button group */
@@ -1641,22 +1658,67 @@
   border: 1px solid var(--mm-border-dark);
   background: rgba(0, 0, 0, 0.25);
   border-radius: 8px;
+  border-top: 1px solid #2f2f22;
+  padding-top: 18px;
+  margin-top: 8px;
+}
+
+.mm-quiz-action-btn-secondary {
+  background: transparent;
+  border: 1px solid #2f2f22;
+  color: var(--mm-text-primary);
+  padding: 10px 18px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.mm-quiz-action-btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.mm-quiz-action-btn-primary {
+  background: var(--mm-gold);
+  border: none;
+  color: #12120e;
+  padding: 10px 18px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  font-weight: 850;
   cursor: pointer;
   display: flex;
   align-items: center;
-  gap: 4px;
-  color: var(--mm-text-secondary);
-  transition: all 0.2s ease;
+  gap: 6px;
+  transition: all 0.2s;
 }
-.status-tag-pill:hover {
-  border-color: var(--mm-text-primary);
-  color: var(--mm-text-primary);
+
+.mm-quiz-action-btn-primary:hover {
+  transform: translateY(-1px);
 }
-.status-tag-pill--active[data-type="none"] { border-color: #6B7280; color: #FFFFFF; background: rgba(107, 114, 128, 0.15); }
-.status-tag-pill--active[data-type="learning"] { border-color: #F59E0B; color: #F59E0B; background: rgba(245, 158, 11, 0.12); }
-.status-tag-pill--active[data-type="learned"] { border-color: #10B981; color: #10B981; background: rgba(16, 185, 129, 0.12); }
-.status-tag-pill--active[data-type="review"] { border-color: #EF4444; color: #EF4444; background: rgba(239, 68, 68, 0.12); }
-.status-tag-pill--active[data-type="important"] { border-color: #D946EF; color: #E879F9; background: rgba(217, 70, 239, 0.15); box-shadow: 0 0 8px rgba(217, 70, 239, 0.15); }
+
+/* Dropzone dragging in Exam modal */
+.aitutor-dropzone--dragging {
+  border-color: var(--mm-gold) !important;
+  background: rgba(255, 226, 89, 0.06) !important;
+}
+
+/* Spinner mini */
+.spinner-mini {
+  vertical-align: middle;
+}
+
+/* Landing Page fullscreen height overrides */
+.lp-root .aitutor-page {
+  height: 100vh !important;
+}
+@media (max-width: 1200px) {
+  .lp-root .aitutor-page {
+    height: auto !important;
+    overflow-y: auto !important;
+  }
+}
 
 /* Outline tree view panel */
 .aitutor-outline-view {
@@ -1668,18 +1730,24 @@
 .outline-card {
   max-width: 800px;
   margin: 0 auto;
-  background: #ffffff;
-  border: 2.5px solid #000000;
-  border-radius: 12px;
+  background: var(--mm-card-dark);
+  border: 2px solid var(--mm-border-dark);
+  border-radius: 20px;
   padding: 24px;
-  color: #000000;
-  box-shadow: 6px 6px 0px #000000;
+  box-shadow: 6px 6px 0px var(--mm-border-dark);
+  
+  /* Local color overrides to ensure readability on white card background */
+  --mm-text-primary: #1e293b;
+  --mm-text-secondary: #64748b;
+  --mm-gold: #d97706; /* Darker amber for high contrast */
+  --mm-border-dark: rgba(0, 0, 0, 0.08);
+  color: var(--mm-text-primary);
 }
 .outline-node-wrapper {
   display: flex;
   flex-direction: column;
   margin-top: 6px;
-  border-left: 1.5px dashed rgba(255, 255, 255, 0.08);
+  border-left: 1.5px dashed rgba(0, 0, 0, 0.1);
   padding-left: 18px;
 }
 .outline-node-wrapper--root {
@@ -1691,28 +1759,37 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px;
+  padding: 12px 16px;
   border-radius: 12px;
   cursor: pointer;
-  background: rgba(255, 255, 255, 0.01);
-  border: 1px solid rgba(255, 255, 255, 0.02);
-  transition: all 0.2s ease;
-  margin-bottom: 6px;
+  background: #f8fafc;
+  border: 1.5px solid #e2e8f0;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  margin-bottom: 8px;
 }
 .outline-node-header:hover {
-  background: rgba(255, 226, 89, 0.03);
-  border-color: rgba(255, 226, 89, 0.15);
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  transform: translateY(-1.5px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.04);
 }
 .outline-node-header--selected {
-  background: rgba(255, 226, 89, 0.05) !important;
+  background: rgba(217, 119, 6, 0.08) !important;
   border-color: var(--mm-gold) !important;
 }
 .outline-node-title-area {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   min-width: 0;
   flex: 1;
+}
+.outline-node-text-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
 }
 .outline-node-expand-btn {
   background: transparent;
@@ -1726,27 +1803,23 @@
   justify-content: center;
   font-size: 14px;
   border-radius: 4px;
+  transition: all 0.15s;
 }
 .outline-node-expand-btn:hover {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.05);
+  color: var(--mm-text-primary);
+  background: rgba(0, 0, 0, 0.05);
 }
 .outline-node-name {
   font-size: 13.5px;
   font-weight: 750;
   color: var(--mm-text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 1.4;
 }
 .outline-node-desc {
   font-size: 11.5px;
   color: var(--mm-text-secondary);
-  margin-left: 8px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
+  line-height: 1.45;
+  margin-left: 0;
 }
 .outline-node-actions {
   display: flex;
@@ -1789,3 +1862,454 @@
   0% { box-shadow: 0 0 5px var(--mm-gold), inset 0 0 5px var(--mm-gold); }
   100% { box-shadow: 0 0 15px var(--mm-gold), inset 0 0 10px var(--mm-gold); }
 }
+
+/* Glowing Connections and Animated Links */
+.canvas-connection-path {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.15);
+  stroke-width: 2.5px;
+  transition: stroke 0.3s, stroke-width 0.3s, stroke-dasharray 0.3s;
+}
+
+.canvas-connection-path--active {
+  stroke: var(--mm-gold) !important;
+  stroke-width: 3.5px !important;
+  stroke-dasharray: 6 4;
+  animation: connection-flow 25s linear infinite;
+  filter: drop-shadow(0px 0px 4px var(--mm-gold));
+}
+
+@keyframes connection-flow {
+  from {
+    stroke-dashoffset: 1000;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* Interactive Toggle Toggles */
+.canvas-node-toggle-circle {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+g:hover > .canvas-node-toggle-circle {
+  fill: var(--mm-gold) !important;
+  stroke: var(--mm-gold) !important;
+}
+g:hover > text {
+  fill: #12120e !important;
+}
+
+/* ==========================================================================
+   Darker Pastel Theme Overrides (4 Main Colors: Blue, Green, Peach, Purple)
+   ========================================================================== */
+
+/* 1. Left Sidebar Background: #294B7C (Darker Blue to highlight white text) */
+.aitutor-sidebar {
+  background: #294B7C !important;
+  border: 1px solid rgba(0, 0, 0, 0.2) !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15) !important;
+}
+
+.aitutor-sidebar .aitutor-sidebar-tabs {
+  background: rgba(0, 0, 0, 0.2) !important;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.25) !important;
+}
+
+.aitutor-sidebar .aitutor-tab-btn {
+  color: rgba(255, 255, 255, 0.7) !important;
+}
+
+.aitutor-sidebar .aitutor-tab-btn--active {
+  background: rgba(255, 255, 255, 0.15) !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+.aitutor-sidebar .aitutor-textarea-label,
+.aitutor-sidebar .aitutor-dropzone-title,
+.aitutor-sidebar .aitutor-history-item-title,
+.aitutor-sidebar h3,
+.aitutor-sidebar h4 {
+  color: #ffffff !important;
+}
+
+.aitutor-sidebar .aitutor-dropzone-desc,
+.aitutor-sidebar .aitutor-history-item-date,
+.aitutor-sidebar .aitutor-history-empty,
+.aitutor-sidebar .aitutor-history-loading,
+.aitutor-sidebar .aitutor-dropzone-icon,
+.aitutor-sidebar .aitutor-history-item-delete {
+  color: rgba(255, 255, 255, 0.75) !important;
+}
+
+.aitutor-sidebar .aitutor-dropzone {
+  border: 2px dashed rgba(255, 255, 255, 0.25) !important;
+  background: rgba(0, 0, 0, 0.15) !important;
+}
+
+.aitutor-sidebar .aitutor-dropzone:hover {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border-color: #ffffff !important;
+}
+
+.aitutor-sidebar .aitutor-textarea {
+  background: rgba(0, 0, 0, 0.2) !important;
+  border: 1px solid rgba(0, 0, 0, 0.2) !important;
+  color: #ffffff !important;
+}
+
+.aitutor-sidebar .aitutor-textarea:focus {
+  background: rgba(0, 0, 0, 0.3) !important;
+  border-color: rgba(255, 255, 255, 0.3) !important;
+}
+
+.aitutor-sidebar .aitutor-textarea::placeholder {
+  color: rgba(255, 255, 255, 0.4) !important;
+}
+
+.aitutor-sidebar .aitutor-history-item {
+  background: rgba(0, 0, 0, 0.15) !important;
+  border: 1px solid rgba(0, 0, 0, 0.15) !important;
+}
+
+.aitutor-sidebar .aitutor-history-item:hover {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+}
+
+.aitutor-sidebar .aitutor-history-item--active {
+  background: rgba(255, 255, 255, 0.1) !important;
+  border: 2px solid rgba(255, 255, 255, 0.3) !important;
+}
+
+.aitutor-sidebar .aitutor-uploaded-tag {
+  background: rgba(0, 0, 0, 0.25) !important;
+  border: 1px solid rgba(0, 0, 0, 0.25) !important;
+  color: #fbbf24 !important;
+}
+
+/* 2. Top Header Background: #E28743 (Richer/Darker Orange to highlight white text) */
+.aitutor-chat-header,
+.aitutor-guest-header {
+  background: #E28743 !important;
+  border: 1px solid rgba(0, 0, 0, 0.15) !important;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.15) !important;
+  color: #ffffff !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08) !important;
+}
+
+.aitutor-chat-header .aitutor-active-title,
+.aitutor-guest-header h2,
+.aitutor-guest-header p,
+.aitutor-guest-header .aitutor-channel-avatar {
+  color: #ffffff !important;
+}
+
+.aitutor-chat-header .aitutor-active-status {
+  color: rgba(255, 255, 255, 0.85) !important;
+}
+
+/* 3. Right Details Drawer Background: #5A4A85 (Darker Purple to highlight white text) */
+.aitutor-drawer {
+  background: rgba(90, 74, 133, 0.92) !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  box-shadow: -10px 0 35px rgba(0, 0, 0, 0.25) !important;
+  color: #ffffff !important;
+}
+
+.aitutor-drawer .aitutor-drawer-header {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+  background: rgba(0, 0, 0, 0.15) !important;
+}
+
+.aitutor-drawer .drawer-depth-tag {
+  background: rgba(255, 255, 255, 0.15) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.25) !important;
+}
+
+.aitutor-drawer .drawer-close-btn {
+  color: rgba(255, 255, 255, 0.7) !important;
+}
+
+.aitutor-drawer .drawer-close-btn:hover {
+  color: #ffffff !important;
+}
+
+.aitutor-drawer .drawer-node-desc {
+  color: rgba(255, 255, 255, 0.9) !important;
+}
+
+.aitutor-drawer .status-tag-pill {
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  background: rgba(0, 0, 0, 0.15) !important;
+  color: rgba(255, 255, 255, 0.7) !important;
+}
+
+.aitutor-drawer .status-tag-pill--active {
+  background: rgba(255, 255, 255, 0.2) !important;
+  color: #ffffff !important;
+  border-color: #ffffff !important;
+}
+
+.aitutor-drawer .aitutor-subnode-input {
+  background: rgba(0, 0, 0, 0.2) !important;
+  border: 1px solid rgba(0, 0, 0, 0.2) !important;
+  color: #ffffff !important;
+}
+
+.aitutor-drawer .aitutor-subnode-input:focus {
+  background: rgba(0, 0, 0, 0.3) !important;
+  border-color: rgba(255, 255, 255, 0.3) !important;
+}
+
+.aitutor-drawer .drawer-view-mode,
+.aitutor-drawer .drawer-edit-mode {
+  background: rgba(0, 0, 0, 0.15) !important;
+  border-radius: 12px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+/* 4. Canvas Nodes & Links Styling */
+.canvas-node-card {
+  border: 1.5px solid rgba(0, 0, 0, 0.12) !important;
+  color: #1e293b !important;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12) !important;
+}
+
+.canvas-node-card-root {
+  border: 3.5px double #1e293b !important;
+}
+
+.canvas-node-card:hover {
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2) !important;
+}
+
+.canvas-node-card--selected {
+  outline: 3px solid #FFD234 !important;
+  outline-offset: 2px !important;
+}
+
+.canvas-connection-path {
+  stroke: rgba(255, 255, 255, 0.25) !important;
+  stroke-width: 2.5px;
+}
+
+.canvas-connection-path--active {
+  stroke: #FFD234 !important;
+  stroke-width: 3.5px !important;
+  filter: drop-shadow(0px 0px 4px rgba(255, 210, 52, 0.4));
+}
+
+.aitutor-canvas-controls {
+  background: rgba(0, 0, 0, 0.4) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2) !important;
+}
+
+.control-btn {
+  background: #ffffff !important;
+  color: #000000 !important;
+  border: 1.5px solid rgba(0, 0, 0, 0.12) !important;
+}
+
+.control-btn:hover {
+  background: #f1f5f9 !important;
+  color: #000000 !important;
+}
+
+/* Dropdown Menu Export Buttons (Black text on White background) */
+.canvas-export-menu {
+  background: #ffffff !important;
+  border: 1px solid rgba(0, 0, 0, 0.15) !important;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.12) !important;
+}
+
+.canvas-export-menu button {
+  color: #000000 !important;
+  background: transparent !important;
+}
+
+.canvas-export-menu button:hover {
+  background: rgba(0, 0, 0, 0.06) !important;
+  color: #1d3557 !important;
+}
+
+/* Search Nodes Input (Force White Text) */
+.aitutor-search-input {
+  color: #ffffff !important;
+}
+
+.aitutor-search-input::placeholder {
+  color: rgba(255, 255, 255, 0.45) !important;
+}
+
+.aitutor-search-btn {
+  color: rgba(255, 255, 255, 0.75) !important;
+}
+
+.aitutor-search-btn:hover {
+  color: #fbbf24 !important;
+}
+
+/* 5. Center Canvas Placeholder and Guide Modal */
+.aitutor-canvas-empty {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  padding: 20px;
+}
+
+.aitutor-canvas-empty p {
+  font-size: 15px;
+  font-weight: 750;
+  color: rgba(255, 255, 255, 0.9) !important;
+  background: rgba(0, 0, 0, 0.45) !important;
+  padding: 14px 28px;
+  border-radius: 20px;
+  text-align: center;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+  margin: 0;
+  max-width: 90%;
+  line-height: 1.5;
+  animation: fadeIn 0.4s ease;
+}
+
+/* Guide Modal Styling */
+.aitutor-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100;
+  animation: modalFadeIn 0.2s ease;
+  backdrop-filter: blur(5px);
+}
+
+.aitutor-modal-content {
+  background: #ffffff;
+  border-radius: 20px;
+  width: 92%;
+  max-width: 520px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+  animation: modalSlideUp 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  color: #1e293b;
+}
+
+.aitutor-modal-header {
+  padding: 16px 20px;
+  background: #E28743; /* Richer header orange */
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.aitutor-modal-header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.aitutor-modal-close {
+  background: none;
+  border: none;
+  color: #ffffff;
+  font-size: 24px;
+  font-weight: 300;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.aitutor-modal-body {
+  padding: 20px;
+  max-height: 65vh;
+  overflow-y: auto;
+}
+
+.help-section {
+  margin-bottom: 18px;
+}
+
+.help-section:last-child {
+  margin-bottom: 0;
+}
+
+.help-section h4 {
+  margin: 0 0 6px 0;
+  font-size: 13px;
+  font-weight: 800;
+  color: #294B7C; /* Darker blue */
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  padding-bottom: 4px;
+}
+
+.help-section ul {
+  margin: 0;
+  padding-left: 18px;
+  list-style-type: disc;
+}
+
+.help-section li {
+  font-size: 12px;
+  color: #4b5563;
+  margin-bottom: 4px;
+  line-height: 1.5;
+}
+
+.help-section li strong {
+  color: #1e293b;
+}
+
+.aitutor-modal-footer {
+  padding: 12px 20px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  background: #f8fafc;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.aitutor-modal-btn-confirm {
+  background: #294B7C;
+  color: #ffffff;
+  border: none;
+  padding: 8px 18px;
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.aitutor-modal-btn-confirm:hover {
+  background: #1d3557;
+  transform: translateY(-1px);
+}
+
+@keyframes modalFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modalSlideUp {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+

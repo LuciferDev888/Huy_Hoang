@@ -15,6 +15,7 @@ import AuthPage from './components/AuthPage';
 import AITutorChat from './components/AITutorChat';
 import CheckoutModal from './components/CheckoutModal';
 import UpgradeModal from './components/UpgradeModal';
+import AnnouncementPopup from './components/AnnouncementPopup';
 import CourseDetails from './components/CourseDetails';
 import TestSimulator from './components/TestSimulator';
 import TeacherDashboard from './components/TeacherDashboard';
@@ -28,6 +29,7 @@ import OCRScanner from './components/OCRScanner.jsx';
 import StudentDashboard from './components/dashboard/StudentDashboard';
 import ContributionHeatmap from './components/ContributionHeatmap';
 import LeaderboardTab from './components/LeaderboardTab';
+import LoadingOverlay from './components/LoadingOverlay';
 
 import CoursesPage from './pages/CoursesPage';
 import CourseDetailPage from './pages/CourseDetailPage';
@@ -43,6 +45,7 @@ import './styles/dashboard.css';
 import './styles/courses.css';
 import AITutorPage from './pages/AITutorPage';
 import './styles/aitutor.css';
+import NotificationsPage from './pages/NotificationsPage';
 import FlashcardPage from './pages/FlashcardPage';
 import './styles/flashcards.css';
 import ExamBankPage from './pages/ExamBankPage';
@@ -53,7 +56,8 @@ import DevToolsPage from './pages/DevToolsPage';
 
 
 import { HiPlay, HiDocumentDownload, HiBeaker, HiX, HiBookOpen } from 'react-icons/hi';
-import { api } from './api';
+import { io } from 'socket.io-client';
+import { api, API_BASE } from './api';
 
 
 
@@ -600,6 +604,136 @@ const generateMassiveExamsList = (backendExams) => {
   return list;
 };
 
+const inlineLeaderboardKeyframes = `
+  @keyframes float-sparkle-inline {
+    0% { transform: translateY(0px) translateX(0px) scale(0.6) rotate(0deg); opacity: 0; }
+    30% { opacity: 0.8; }
+    70% { opacity: 0.8; }
+    100% { transform: translateY(-80px) translateX(15px) scale(1.1) rotate(180deg); opacity: 0; }
+  }
+  @keyframes aura-glow-gold-inline {
+    0% { box-shadow: 0 0 15px rgba(245, 196, 83, 0.2); }
+    50% { box-shadow: 0 0 35px rgba(245, 196, 83, 0.6); }
+    100% { box-shadow: 0 0 15px rgba(245, 196, 83, 0.2); }
+  }
+  @keyframes aura-glow-silver-inline {
+    0% { box-shadow: 0 0 15px rgba(191, 219, 254, 0.25); }
+    50% { box-shadow: 0 0 35px rgba(191, 219, 254, 0.65); }
+    100% { box-shadow: 0 0 15px rgba(191, 219, 254, 0.25); }
+  }
+  @keyframes aura-glow-bronze-inline {
+    0% { box-shadow: 0 0 15px rgba(254, 215, 170, 0.25); }
+    50% { box-shadow: 0 0 35px rgba(254, 215, 170, 0.65); }
+    100% { box-shadow: 0 0 15px rgba(254, 215, 170, 0.25); }
+  }
+  .leaderboard-row-animated-inline {
+    opacity: 0;
+    transform: translateX(50px);
+    transition: all 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .leaderboard-row-animated-inline.is-visible {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  .leaderboard-top1-card-inline {
+    transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  }
+  .leaderboard-top1-card-inline:hover {
+    transform: translateY(-8px) scale(1.02);
+    box-shadow: 0 20px 45px rgba(245, 196, 83, 0.45) !important;
+  }
+  .leaderboard-top2-card-inline {
+    transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  }
+  .leaderboard-top2-card-inline:hover {
+    transform: translateY(-8px) scale(1.02);
+    box-shadow: 0 20px 45px rgba(191, 219, 254, 0.5) !important;
+  }
+  .leaderboard-top3-card-inline {
+    transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  }
+  .leaderboard-top3-card-inline:hover {
+    transform: translateY(-8px) scale(1.02);
+    box-shadow: 0 20px 45px rgba(254, 215, 170, 0.5) !important;
+  }
+`;
+
+function useIntersectionObserverInline() {
+  const [isVisible, setIsVisible] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setIsVisible(entry.isIntersecting);
+      },
+      { threshold: 0.05, rootMargin: '0px 0px -20px 0px' }
+    );
+
+    if (ref.current) {
+      observer.observe(ref.current);
+    }
+
+    return () => {
+      if (ref.current) observer.unobserve(ref.current);
+    };
+  }, []);
+
+  return [ref, isVisible];
+}
+
+function ScrollAnimatedRowInline({ children, className, style, delay = 0, duration = '0.6s' }) {
+  const [ref, isVisible] = useIntersectionObserverInline();
+
+  return (
+    <div
+      ref={ref}
+      className={`${className} leaderboard-row-animated-inline ${isVisible ? 'is-visible' : ''}`}
+      style={{
+        ...style,
+        transitionDuration: duration,
+        transitionDelay: `${delay}s`
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function FairyDustInline({ active }) {
+  if (!active) return null;
+  const particles = [
+    { top: '15%', left: '10%', delay: '0s', size: '12px' },
+    { top: '35%', left: '85%', delay: '1.2s', size: '14px' },
+    { top: '55%', left: '8%', delay: '0.6s', size: '10px' },
+    { top: '75%', left: '80%', delay: '2s', size: '13px' },
+    { top: '80%', left: '20%', delay: '0.9s', size: '11px' },
+    { top: '25%', left: '50%', delay: '0.4s', size: '15px' },
+  ];
+
+  return (
+    <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, pointerEvents: 'none', overflow: 'hidden', zIndex: 5 }}>
+      {particles.map((p, idx) => (
+        <span
+          key={idx}
+          style={{
+            position: 'absolute',
+            top: p.top,
+            left: p.left,
+            fontSize: p.size,
+            animation: 'float-sparkle-inline 3.2s ease-in-out infinite',
+            animationDelay: p.delay,
+            opacity: 0,
+            color: idx % 2 === 0 ? '#F5C453' : '#a29bfe'
+          }}
+        >
+          {idx % 3 === 0 ? '✨' : (idx % 3 === 1 ? '⭐' : '🌸')}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function InlineLeaderboardTab({ currentUser }) {
   const [grade, setGrade] = useState('');
   const [subject, setSubject] = useState('');
@@ -636,8 +770,8 @@ function InlineLeaderboardTab({ currentUser }) {
     return () => { active = false; };
   }, [grade, subject, province, search, page]);
 
-  const top3 = rankings.slice(0, 3);
-  const rest = rankings.slice(3);
+  const top3 = page === 1 ? rankings.slice(0, 3) : [];
+  const rest = page === 1 ? rankings.slice(3) : rankings;
 
   const getStreakDisplay = (student) => {
     if (subject) {
@@ -661,7 +795,7 @@ function InlineLeaderboardTab({ currentUser }) {
             border: `${borderSize}px solid #000`,
             objectFit: 'cover',
             display: 'inline-block',
-            margin: size > 40 ? '14px 0' : '0',
+            margin: size > 40 ? '8px 0' : '0',
             boxShadow: '1.5px 1.5px 0px #000'
           }}
           onError={(e) => {
@@ -684,7 +818,7 @@ function InlineLeaderboardTab({ currentUser }) {
         fontWeight: 'bold',
         fontSize: size > 40 ? '18px' : '11px',
         border: `${borderSize}px solid #000`,
-        margin: size > 40 ? '14px 0' : '0',
+        margin: size > 40 ? '8px 0' : '0',
         boxShadow: '1.5px 1.5px 0px #000',
         textTransform: 'uppercase'
       }}>
@@ -694,249 +828,385 @@ function InlineLeaderboardTab({ currentUser }) {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      {/* Search and Filters Section */}
-      <div className="card" style={{
-        border: '3px solid #000',
-        boxShadow: '4px 4px 0px #000',
-        padding: '20px',
-        background: 'var(--bg-card)',
-        display: 'flex',
-        flexWrap: 'wrap',
-        gap: '12px',
-        alignItems: 'center'
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      <style>{inlineLeaderboardKeyframes}</style>
+
+      {/* Filter Box */}
+      <div className="card animate-slide-up" style={{ 
+        border: '1.5px solid #E2E8F0', 
+        boxShadow: '0 4px 12px rgba(0,0,0,0.02)', 
+        padding: '20px', 
+        background: '#FCF9F2', 
+        borderRadius: '16px',
+        display: 'flex', 
+        flexWrap: 'wrap', 
+        gap: '12px', 
+        alignItems: 'center' 
       }}>
         <div style={{ flex: '1 1 200px' }}>
           <input
             type="text"
-            className="form-control"
-            placeholder="🔍 Tìm học sinh bằng họ tên..."
+            className="input-custom"
+            placeholder="Tìm học sinh..."
             value={search}
             onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-            style={{
-              width: '100%',
-              border: '2px solid #000',
-              padding: '10px 14px',
-              borderRadius: '8px',
-              fontSize: '13px',
-              background: 'var(--bg-main)'
-            }}
+            style={{ width: '100%', padding: '10px 14px', borderRadius: '8px', border: '1.5px solid #E2E8F0', fontSize: '13.5px', fontWeight: 'bold' }}
           />
         </div>
 
-        <div style={{ flex: '1 1 150px' }}>
-          <input
-            type="text"
-            className="form-control"
-            placeholder="📍 Tìm kiếm tỉnh thành..."
-            value={province}
-            onChange={(e) => { setProvince(e.target.value); setPage(1); }}
-            style={{
-              width: '100%',
-              border: '2px solid #000',
-              padding: '10px 14px',
-              borderRadius: '8px',
-              fontSize: '13px',
-              background: 'var(--bg-main)'
-            }}
-          />
-        </div>
-
-        <div style={{ flex: '0 0 120px' }}>
+        <div style={{ flex: '0 0 130px' }}>
           <select
+            className="select-custom"
             value={grade}
             onChange={(e) => { setGrade(e.target.value); setPage(1); }}
-            style={{
-              width: '100%',
-              border: '2px solid #000',
-              padding: '10px',
-              borderRadius: '8px',
-              fontSize: '13px',
-              fontWeight: 'bold',
-              background: 'var(--bg-main)',
-              cursor: 'pointer'
-            }}
+            style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1.5px solid #E2E8F0', fontSize: '13.5px', fontWeight: 'bold', background: '#FFF' }}
           >
-            <option value="">Khối lớp</option>
+            <option value="">Tất cả Khối</option>
             <option value="10">Khối 10</option>
             <option value="11">Khối 11</option>
             <option value="12">Khối 12</option>
           </select>
         </div>
 
-        <div style={{ flex: '0 0 140px' }}>
+        <div style={{ flex: '0 0 150px' }}>
           <select
+            className="select-custom"
             value={subject}
             onChange={(e) => { setSubject(e.target.value); setPage(1); }}
-            style={{
-              width: '100%',
-              border: '2px solid #000',
-              padding: '10px',
-              borderRadius: '8px',
-              fontSize: '13px',
-              fontWeight: 'bold',
-              background: 'var(--bg-main)',
-              cursor: 'pointer'
-            }}
+            style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1.5px solid #E2E8F0', fontSize: '13.5px', fontWeight: 'bold', background: '#FFF' }}
           >
-            <option value="">Tất cả môn</option>
-            <option value="toán học">Toán học</option>
-            <option value="vật lý">Vật lý</option>
-            <option value="hóa học">Hóa học</option>
-            <option value="sinh học">Sinh học</option>
-            <option value="tiếng anh">Tiếng Anh</option>
+            <option value="">Tất cả Môn</option>
+            <option value="Toán học">Toán học</option>
+            <option value="Vật lí">Vật lí</option>
+            <option value="Hóa học">Hóa học</option>
+            <option value="Sinh học">Sinh học</option>
+            <option value="Lịch sử">Lịch sử</option>
+            <option value="Địa lí">Địa lí</option>
+            <option value="Tiếng Anh">Tiếng Anh</option>
+            <option value="GDCD">GDCD</option>
+          </select>
+        </div>
+
+        <div style={{ flex: '0 0 160px' }}>
+          <select
+            className="select-custom"
+            value={province}
+            onChange={(e) => { setProvince(e.target.value); setPage(1); }}
+            style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1.5px solid #E2E8F0', fontSize: '13.5px', fontWeight: 'bold', background: '#FFF' }}
+          >
+            <option value="">Tất cả Tỉnh thành</option>
+            {['Hà Nội', 'TP. Hồ Chí Minh', 'Đà Nẵng', 'Hải Phòng', 'Cần Thơ', 'Nghệ An', 'Thanh Hóa', 'Đồng Nai', 'Bình Dương', 'Quảng Ninh'].map(p => (
+              <option key={p} value={p}>{p}</option>
+            ))}
           </select>
         </div>
       </div>
 
       {loading ? (
-        <div style={{ textAlign: 'center', padding: '50px 0', fontSize: '15px', fontWeight: 'bold' }}>
+        <div style={{ textAlign: 'center', padding: '50px 0', fontSize: '15px', fontWeight: 'bold', color: '#64748B' }}>
           Đang tải bảng xếp hạng chiến thần học tập... 🏆
         </div>
       ) : (
         <>
-          {/* Top 3 High-contrast Cards */}
+          {/* Top 3 High-contrast 3D Podium Cards */}
           {top3.length > 0 && (
             <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-              gap: '24px'
+              display: 'flex',
+              alignItems: 'flex-end',
+              justifyContent: 'center',
+              gap: '24px',
+              margin: '40px 0 24px 0',
+              flexWrap: 'wrap',
+              position: 'relative'
             }}>
-              {top3.map((student, index) => {
-                const colors = [
-                  { bg: 'linear-gradient(135deg, #fef9c3, #fef08a)', medal: '🥇', label: 'Thủ khoa', text: '#854d0e' },
-                  { bg: 'linear-gradient(135deg, #f1f5f9, #e2e8f0)', medal: '🥈', label: 'Á khoa', text: '#475569' },
-                  { bg: 'linear-gradient(135deg, #ffedd5, #fed7aa)', medal: '🥉', label: 'Tam khoa', text: '#c2410c' }
-                ][index] || { bg: '#fff', medal: '⭐', label: 'Vinh danh', text: '#000' };
+              {(() => {
+                const podiumSpots = [];
+                if (top3.length === 3) {
+                  podiumSpots.push({ student: top3[1], index: 1 }); // Rank 2 (Left)
+                  podiumSpots.push({ student: top3[0], index: 0 }); // Rank 1 (Center)
+                  podiumSpots.push({ student: top3[2], index: 2 }); // Rank 3 (Right)
+                } else {
+                  top3.forEach((s, i) => podiumSpots.push({ student: s, index: i }));
+                }
 
-                const cardClass = index === 0 ? "leaderboard-top-card leaderboard-top1-card animate-slide-up" : "leaderboard-top-card animate-slide-up";
+                return podiumSpots.map(({ student, index }) => {
+                  const configs = [
+                    { 
+                      bg: '#FED7AA', 
+                      border: '2px solid #F5C453', 
+                      medal: '👑', 
+                      label: 'CHIẾN THẦN TOÀN NĂNG', 
+                      textColor: '#B45309',
+                      height: '380px',
+                      podiumHeight: '80px',
+                      podiumBg: 'linear-gradient(180deg, #F5C453 0%, #D97706 100%)',
+                      shadow: '0 12px 30px rgba(245, 196, 83, 0.25)',
+                      glowClass: 'leaderboard-top1-card-inline',
+                      glowStyle: { animation: 'aura-glow-gold-inline 4s ease-in-out infinite' }
+                    },
+                    { 
+                      bg: '#FED7AA', 
+                      border: '2px solid #94A3B8', 
+                      medal: '🥈', 
+                      label: 'TINH ANH HỌC THUẬT', 
+                      textColor: '#475569',
+                      height: '340px',
+                      podiumHeight: '60px',
+                      podiumBg: 'linear-gradient(180deg, #94A3B8 0%, #64748B 100%)',
+                      shadow: '0 8px 20px rgba(148, 163, 184, 0.15)',
+                      glowClass: 'leaderboard-top2-card-inline',
+                      glowStyle: { animation: 'aura-glow-silver-inline 4s ease-in-out infinite' }
+                    },
+                    { 
+                      bg: '#FED7AA', 
+                      border: '2px solid #F97316', 
+                      medal: '🥉', 
+                      label: 'CAO THỦ ẨN DANH', 
+                      textColor: '#C2410C',
+                      height: '310px',
+                      podiumHeight: '40px',
+                      podiumBg: 'linear-gradient(180deg, #F97316 0%, #C2410C 100%)',
+                      shadow: '0 6px 15px rgba(249, 115, 22, 0.12)',
+                      glowClass: 'leaderboard-top3-card-inline',
+                      glowStyle: { animation: 'aura-glow-bronze-inline 4s ease-in-out infinite' }
+                    }
+                  ][index] || { bg: '#FED7AA', border: '1px solid #E2E8F0', medal: '⭐', label: 'Vinh danh', textColor: '#64748B', height: '240px', podiumHeight: '30px', podiumBg: '#E2E8F0', shadow: 'none', glowClass: '', glowStyle: {} };
 
-                return (
-                  <div
-                    key={student.userId}
-                    className={cardClass}
-                    style={{
-                      background: colors.bg,
-                      border: '3px solid #000',
-                      borderRadius: '16px',
-                      padding: '24px 16px',
-                      textAlign: 'center',
-                      boxShadow: '4px 4px 0px #000',
-                      position: 'relative'
-                    }}
-                  >
-                    <span style={{
-                      position: 'absolute',
-                      top: '12px',
-                      right: '16px',
-                      fontSize: '11px',
-                      fontWeight: '900',
-                      background: '#000',
-                      color: '#fff',
-                      padding: '2px 8px',
-                      borderRadius: '10px'
-                    }}>
-                      Hạng {student.rank}
-                    </span>
-                    <span style={{ fontSize: '36px', display: 'block', marginBottom: '8px' }}>{colors.medal}</span>
-                    <h3 style={{ fontSize: '15px', fontWeight: '955', textTransform: 'uppercase', color: colors.text, margin: 0 }}>
-                      {colors.label} {subject ? subject.toUpperCase() : 'Toàn sàn'}
-                    </h3>
-                    
-                    {renderAvatar(student.avatar, student.name, 64, 3)}
+                  return (
+                    <ScrollAnimatedRowInline
+                      key={student.userId}
+                      className={configs.glowClass}
+                      delay={index * 0.15}
+                      duration="1.5s"
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        width: '280px',
+                        position: 'relative',
+                        zIndex: index === 0 ? 10 : 1,
+                        ...configs.glowStyle
+                      }}
+                    >
+                      <FairyDustInline active={index === 0} />
 
-                    <h4 style={{ fontSize: '16px', fontWeight: '900', color: '#000', margin: '10px 0 4px 0' }}>{student.name}</h4>
-                    <p style={{ fontSize: '12px', color: '#4b5563', margin: '0 0 6px 0' }}>
-                      Khối {student.grade || 'Chưa rõ'} • Tỉnh: {student.province || 'Chưa cập nhật'}
-                    </p>
-                    <p style={{ fontSize: '13px', fontWeight: '900', color: colors.text, margin: 0 }}>
-                      XP: <strong>{student.xp.toLocaleString()}</strong> • {getStreakDisplay(student)}
-                    </p>
-                  </div>
-                );
-              })}
+                      <div
+                        style={{
+                          background: configs.bg,
+                          border: configs.border,
+                          borderRadius: '24px',
+                          padding: '24px 20px 16px 20px',
+                          textAlign: 'center',
+                          boxShadow: configs.shadow,
+                          width: '100%',
+                          minHeight: configs.height,
+                          height: 'auto',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          boxSizing: 'border-box'
+                        }}
+                      >
+                        <span style={{
+                          position: 'absolute',
+                          top: '-12px',
+                          background: '#000',
+                          color: '#fff',
+                          padding: '3px 12px',
+                          borderRadius: '20px',
+                          fontSize: '11px',
+                          fontWeight: '900',
+                          border: '1.5px solid ' + (index === 0 ? '#F5C453' : '#000')
+                        }}>
+                          Hạng {student.rank}
+                        </span>
+
+                        <div style={{ fontSize: '32px', marginTop: '6px' }}>{configs.medal}</div>
+
+                        <h4 style={{ fontSize: '13px', fontWeight: '900', textTransform: 'uppercase', color: configs.textColor, margin: '2px 0 10px 0', letterSpacing: '0.05em' }}>
+                          {configs.label}
+                        </h4>
+
+                        <div style={{ position: 'relative', marginBottom: '10px' }}>
+                          {index === 0 && (
+                            <span style={{ position: 'absolute', top: '-16px', left: '50%', transform: 'translateX(-50%) rotate(-10deg)', fontSize: '20px', zIndex: 11 }}>👑</span>
+                          )}
+                          {renderAvatar(student.avatar, student.name, index === 0 ? 76 : 64, index === 0 ? 3 : 2)}
+                        </div>
+
+                        <div style={{ width: '100%', marginBottom: '10px' }}>
+                          <h4 style={{ fontSize: '16px', fontWeight: '900', color: '#1E293B', margin: '0 0 4px 0', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                            {student.name}
+                          </h4>
+                          <p style={{ fontSize: '12px', color: '#475569', margin: '0 0 6px 0', fontWeight: '500' }}>
+                            Khối {student.grade || 'Chưa rõ'} • Tỉnh: {student.province || 'Chưa cập nhật'}
+                          </p>
+                        </div>
+
+                        <div style={{ 
+                          width: '100%', 
+                          background: 'rgba(255,255,255,0.7)', 
+                          border: '1px solid rgba(0,0,0,0.05)', 
+                          borderRadius: '12px', 
+                          padding: '8px 12px', 
+                          fontSize: '12.5px', 
+                          fontWeight: '800', 
+                          color: '#1E293B',
+                          boxSizing: 'border-box'
+                        }}>
+                          <span>XP: <strong style={{ color: '#6c5ce7', fontSize: '13.5px' }}>{student.xp.toLocaleString()}</strong></span>
+                          <span style={{ color: '#94A3B8', margin: '0 6px' }}>|</span>
+                          <span>{getStreakDisplay(student)}</span>
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          background: configs.podiumBg,
+                          width: '85%',
+                          height: configs.podiumHeight,
+                          borderTopLeftRadius: '12px',
+                          borderTopRightRadius: '12px',
+                          boxShadow: 'inset 0 4px 10px rgba(255,255,255,0.25), 0 4px 15px rgba(0,0,0,0.08)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: '#FFFFFF',
+                          fontWeight: '900',
+                          fontSize: '24px',
+                          textShadow: '0 2px 4px rgba(0,0,0,0.3)',
+                          border: '1.5px solid rgba(0,0,0,0.15)',
+                          borderBottom: 'none',
+                          boxSizing: 'border-box'
+                        }}
+                      >
+                        {student.rank}
+                      </div>
+                    </ScrollAnimatedRowInline>
+                  );
+                });
+              })()}
             </div>
           )}
 
-          {/* Table rankings */}
+          {/* Table rankings - Showing starting from top 4 onwards in pastel theme */}
           <div className="card animate-slide-up" style={{
-            border: '3px solid #000',
-            boxShadow: '4px 4px 0px #000',
+            border: '1px solid rgba(255,255,255,0.1)',
+            boxShadow: '0 10px 30px rgba(0, 0, 0, 0.02)',
+            borderRadius: '20px',
             padding: '24px',
-            background: 'var(--bg-card)',
-            overflowX: 'auto'
+            background: '#5A7C54'
           }}>
-            {rankings.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '20px 0', fontSize: '14px', color: 'var(--text-secondary)' }}>
-                Không tìm thấy học sinh nào phù hợp với bộ lọc hiện tại. 🔍
+            {rest.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '20px 0', fontSize: '14px', color: 'rgba(255,255,255,0.7)' }}>
+                Không tìm thấy học sinh nào phù hợp từ vị trí thứ 4 trở đi. 🔍
               </div>
             ) : (
-              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
-                <thead>
-                  <tr style={{ borderBottom: '3.5px solid #000', color: '#000' }}>
-                    <th style={{ padding: '12px 10px', fontWeight: '950', fontSize: '13px', textTransform: 'uppercase' }}>Hạng</th>
-                    <th style={{ padding: '12px 10px', fontWeight: '950', fontSize: '13px', textTransform: 'uppercase' }}>Học sinh</th>
-                    <th style={{ padding: '12px 10px', fontWeight: '950', fontSize: '13px', textTransform: 'uppercase' }}>Khối lớp</th>
-                    <th style={{ padding: '12px 10px', fontWeight: '950', fontSize: '13px', textTransform: 'uppercase' }}>Tỉnh thành</th>
-                    <th style={{ padding: '12px 10px', fontWeight: '950', fontSize: '13px', textTransform: 'uppercase' }}>Chuỗi học</th>
-                    <th style={{ padding: '12px 10px', fontWeight: '950', fontSize: '13px', textTransform: 'uppercase', textAlign: 'right' }}>Tổng điểm XP</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rankings.map((student) => (
-                    <tr
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', minWidth: '800px' }}>
+                {/* Custom Grid Header */}
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '80px 2fr 1fr 1.2fr 1.5fr 1.2fr',
+                  alignItems: 'center',
+                  padding: '12px 24px',
+                  borderBottom: '2.5px solid rgba(255,255,255,0.15)',
+                  color: '#FFFFFF',
+                  fontWeight: '900',
+                  fontSize: '12.5px',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em'
+                }}>
+                  <div>Hạng</div>
+                  <div>Học sinh</div>
+                  <div>Khối lớp</div>
+                  <div>Tỉnh thành</div>
+                  <div>Chuỗi học</div>
+                  <div style={{ textAlign: 'right' }}>Tổng điểm XP</div>
+                </div>
+
+                {/* Custom Grid Rows */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {rest.map((student, idx) => (
+                    <ScrollAnimatedRowInline
                       key={student.userId}
-                      className="leaderboard-row animate-slide-up"
+                      className="leaderboard-row"
+                      delay={idx * 0.05}
                       style={{
-                        borderBottom: '2.5px solid #000',
-                        background: student.userId === currentUser?.id ? 'rgba(108, 92, 231, 0.08)' : 'transparent',
-                        fontWeight: student.userId === currentUser?.id ? 'bold' : 'normal'
-                      }}
-                    >
-                      <td style={{ padding: '12px 10px' }}>
-                        <span style={{
-                          fontWeight: '900',
-                          fontSize: '13px',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          width: '28px',
-                          height: '28px',
-                          borderRadius: '50%',
-                          border: '2px solid #000',
-                          background: student.rank === 1 ? '#fef08a' : (student.rank === 2 ? '#e2e8f0' : (student.rank === 3 ? '#fed7aa' : 'transparent')),
-                          boxShadow: '1.5px 1.5px 0px #000'
-                        }}>
-                          {student.rank}
-                        </span>
-                      </td>
-                      <td style={{ padding: '12px 10px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                          {renderAvatar(student.avatar, student.name, 32, 2)}
-                          <div>
-                            <div style={{ fontWeight: '900', fontSize: '13.5px' }}>{student.name}</div>
-                            {student.userId === currentUser?.id && (
-                              <span style={{ fontSize: '10px', background: '#00b894', color: '#fff', padding: '1px 6px', borderRadius: '4px', fontWeight: '900' }}>BẠN</span>
-                            )}
+                        display: 'grid',
+                        gridTemplateColumns: '80px 2fr 1fr 1.2fr 1.5fr 1.2fr',
+                        alignItems: 'center',
+                        padding: '16px 24px',
+                        background: student.userId === currentUser?.id 
+                          ? '#EEF2FF' 
+                          : '#FFFFFF',
+                        fontWeight: student.userId === currentUser?.id ? 'bold' : 'normal',
+                          color: '#1E293B',
+                          borderRadius: '16px',
+                          border: '1.5px solid #E2E8F0',
+                          boxShadow: '0 4px 6px rgba(0,0,0,0.015)',
+                          transition: 'all 0.25s ease',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        {/* Rank Column */}
+                        <div>
+                          <span 
+                            className="leaderboard-row-rank"
+                            style={{
+                              fontWeight: '900',
+                              fontSize: '13px',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              width: '28px',
+                              height: '28px',
+                              borderRadius: '50%',
+                              border: '1px solid #E2E8F0',
+                              background: 'transparent',
+                              color: '#475569'
+                            }}
+                          >
+                            {student.rank}
+                          </span>
+                        </div>
+
+                        {/* Student Info Column */}
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                            {renderAvatar(student.avatar, student.name, 36, 1.5)}
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+                              <div className="leaderboard-row-name" style={{ fontWeight: '900', fontSize: '14px', color: '#1E293B', whiteSpace: 'nowrap' }}>{student.name}</div>
+                              {student.userId === currentUser?.id && (
+                                <span style={{ fontSize: '10px', background: '#00b894', color: '#fff', padding: '1px 6px', borderRadius: '4px', fontWeight: '900', marginTop: '2px', display: 'inline-block' }}>BẠN</span>
+                              )}
+                            </div>
                           </div>
                         </div>
-                      </td>
-                      <td style={{ padding: '12px 10px', fontSize: '13px', fontWeight: '800' }}>
-                        Khối {student.grade || 'Chưa cập nhật'}
-                      </td>
-                      <td style={{ padding: '12px 10px', color: 'var(--text-secondary)', fontSize: '13px' }}>
-                        📍 {student.province || 'Chưa rõ'}
-                      </td>
-                      <td style={{ padding: '12px 10px', fontWeight: '800', color: '#d97706', fontSize: '13px' }}>
-                        {getStreakDisplay(student)}
-                      </td>
-                      <td style={{ padding: '12px 10px', textAlign: 'right', fontWeight: '955', fontSize: '14px' }}>
-                        {student.xp.toLocaleString()} XP
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+
+                        {/* Grade Column */}
+                        <div className="leaderboard-row-grade" style={{ fontSize: '13px', fontWeight: '800', color: '#475569' }}>
+                          Khối {student.grade || 'Chưa cập nhật'}
+                        </div>
+
+                        {/* Province Column */}
+                        <div className="leaderboard-row-province" style={{ color: '#64748B', fontSize: '13px' }}>
+                          📍 {student.province || 'Chưa rõ'}
+                        </div>
+
+                        {/* Streak Column */}
+                        <div style={{ fontWeight: '800', color: '#ff9f43', fontSize: '13px' }}>
+                          {getStreakDisplay(student)}
+                        </div>
+
+                        {/* XP Column */}
+                        <div className="leaderboard-row-score" style={{ textAlign: 'right', fontWeight: '900', fontSize: '14.5px', color: '#1E293B' }}>
+                          {student.xp.toLocaleString()} XP
+                        </div>
+                      </ScrollAnimatedRowInline>
+                    ))}
+                </div>
+              </div>
             )}
 
             {/* Pagination Controls */}
@@ -946,15 +1216,16 @@ function InlineLeaderboardTab({ currentUser }) {
                   disabled={page === 1}
                   onClick={() => setPage(page - 1)}
                   style={{
-                    border: '2px solid #000',
-                    background: page === 1 ? 'var(--border)' : 'var(--bg-card)',
-                    color: '#000',
+                    border: '1px solid #CBD5E1',
+                    background: page === 1 ? '#F1F5F9' : '#FFFFFF',
+                    color: page === 1 ? '#94A3B8' : '#1E293B',
                     fontWeight: '800',
                     padding: '8px 16px',
                     borderRadius: '8px',
                     fontSize: '13px',
                     cursor: page === 1 ? 'not-allowed' : 'pointer',
-                    boxShadow: page === 1 ? 'none' : '2px 2px 0px #000'
+                    boxShadow: '0 2px 4px rgba(0, 0, 0, 0.02)',
+                    transition: 'all 0.2s'
                   }}
                 >
                   ◀ Trang trước
@@ -1003,6 +1274,112 @@ export default function App() {
 
   // Custom SPA Router State
   const [currentPath, setCurrentPath] = useState(window.location.pathname);
+
+  // Announcement popup states
+  const [activeAnnouncements, setActiveAnnouncements] = useState([]);
+  const [currentAnnouncement, setCurrentAnnouncement] = useState(null);
+  const [sessionDismissedAnnouncements, setSessionDismissedAnnouncements] = useState([]);
+
+  // Page mapper helper for targetPages matching
+  const getCurrentPageName = (route) => {
+    if (!route) return 'Home';
+    if (route.route === 'landing') return 'Home';
+    if (route.route === 'public-courses' || route.route === 'public-course-detail' || route.route === 'learn') {
+      return 'Courses';
+    }
+    if (route.route === 'dashboard' && route.tab === 'courses') {
+      return 'Courses';
+    }
+    if (
+      route.route === 'public-mock-exams' || 
+      route.route === 'public-mock-exam-detail' || 
+      route.route === 'public-mock-exam-taking' || 
+      route.route === 'public-mock-exam-result'
+    ) {
+      return 'Practice';
+    }
+    if (route.route === 'dashboard' && route.tab === 'tests') {
+      return 'Practice';
+    }
+    if (route.route === 'public-exam-bank') return 'Exam';
+    if (route.route === 'dashboard' && route.tab === 'library') {
+      return 'Exam';
+    }
+    if (route.route === 'public-ai-tutor' || route.route === 'public-flashcards') return 'AI Coach';
+    if (route.route === 'dashboard' && ['ai-qa', 'path', 'ai-chat'].includes(route.tab)) {
+      return 'AI Coach';
+    }
+    if (route.route === 'dashboard' && route.tab === 'settings') return 'Profile';
+    if (route.route === 'dashboard' && route.tab === 'home') return 'Dashboard';
+    return 'Home';
+  };
+
+  // Fetch active announcements
+  useEffect(() => {
+    const fetchActiveAnnouncements = async () => {
+      try {
+        const uRole = currentUser?.role ? currentUser.role.toUpperCase() : 'GUEST';
+        const res = await api.getActiveAnnouncement(uRole);
+        if (res && Array.isArray(res)) {
+          setActiveAnnouncements(res);
+        } else if (res && res.data) {
+          setActiveAnnouncements(res.data);
+        }
+      } catch (err) {
+        console.error('[Fetch Active Announcements Error]:', err);
+      }
+    };
+    fetchActiveAnnouncements();
+  }, [currentUser]);
+
+  // Determine popup display matching priority, role, page path, hide_until
+  useEffect(() => {
+    if (!activeAnnouncements || activeAnnouncements.length === 0) {
+      setCurrentAnnouncement(null);
+      return;
+    }
+
+    const pageName = getCurrentPageName(parsedRoute);
+    const uRole = currentUser?.role ? currentUser.role.toUpperCase() : 'GUEST';
+
+    const eligible = activeAnnouncements.filter(ann => {
+      // 1. Session dismissed
+      if (sessionDismissedAnnouncements.includes(ann.id)) {
+        return false;
+      }
+
+      // 2. Local storage hide_until
+      const hideUntilStr = localStorage.getItem(`announcement_${ann.id}_hide_until`);
+      if (hideUntilStr) {
+        const hideUntil = Number(hideUntilStr);
+        if (Date.now() < hideUntil) {
+          return false;
+        }
+      }
+
+      // 3. Target roles check
+      const roleMatch = ann.targetRoles.includes('EVERYONE') || ann.targetRoles.includes(uRole);
+      if (!roleMatch) return false;
+
+      // 4. Check target pages
+      const pageMatch = ann.targetPages.includes('All Pages') || ann.targetPages.includes(pageName);
+      if (!pageMatch) return false;
+
+      return true;
+    });
+
+    if (eligible.length > 0) {
+      eligible.sort((a, b) => {
+        if (b.priority !== a.priority) {
+          return b.priority - a.priority;
+        }
+        return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+      });
+      setCurrentAnnouncement(eligible[0]);
+    } else {
+      setCurrentAnnouncement(null);
+    }
+  }, [activeAnnouncements, currentPath, currentUser, sessionDismissedAnnouncements]);
 
   useEffect(() => {
     const handlePopState = () => {
@@ -1090,6 +1467,9 @@ export default function App() {
     }
     if (currentPath.startsWith('/admin/')) {
       const tab = currentPath.substring(7).replace(/\/$/, '');
+      if (tab === 'roles') {
+        return { route: 'admin', tab: 'stats' };
+      }
       return { route: 'admin', tab: tab };
     }
 
@@ -1326,6 +1706,128 @@ export default function App() {
     { id: 1, text: "Chào mừng bạn gia nhập EduPath AI! Hãy bắt đầu khám phá lộ trình của bạn.", time: "Vừa xong", read: false }
   ]);
 
+  const handleClearNotifications = async () => {
+    try {
+      await api.markAllNotificationsAsRead();
+      setNotifications(prev => prev.map(n => ({ ...n, read: true, isRead: true })));
+      showToast.current?.('Đã đánh dấu tất cả thông báo là đã đọc!', 'success');
+    } catch (err) {
+      console.error('[Clear Notifications Error]', err);
+    }
+  };
+
+  const handleNotificationClick = async (notif) => {
+    try {
+      if (!notif.read && !notif.isRead) {
+        await api.markNotificationAsRead(notif.id);
+        setNotifications(prev => prev.map(n => n.id === notif.id ? { ...n, read: true, isRead: true } : n));
+      }
+      if (notif.link) {
+        navigateTo(notif.link);
+      }
+    } catch (err) {
+      console.error('[Notification Click Error]', err);
+    }
+  };
+
+  function formatRelativeTime(dateString) {
+    try {
+      const date = new Date(dateString);
+      const now = new Date();
+      const diffMs = now - date;
+      const diffMins = Math.floor(diffMs / 60000);
+      const diffHours = Math.floor(diffMs / 3600000);
+      const diffDays = Math.floor(diffMs / 86400000);
+
+      if (diffMins < 1) return 'Vừa xong';
+      if (diffMins < 60) return `${diffMins} phút trước`;
+      if (diffHours < 24) return `${diffHours} giờ trước`;
+      if (diffDays === 1) return 'Hôm qua';
+      if (diffDays < 7) return `${diffDays} ngày trước`;
+      return date.toLocaleDateString('vi-VN', { day: 'numeric', month: 'numeric', year: 'numeric' });
+    } catch (e) {
+      return 'Vừa xong';
+    }
+  }
+
+  useEffect(() => {
+    if (!currentUser) {
+      setNotifications([]);
+      return;
+    }
+
+    const fetchNotifications = async () => {
+      try {
+        const res = await api.getNotifications({ limit: 20 });
+        if (res && res.notifications) {
+          setNotifications(res.notifications.map(n => ({
+            id: n.id,
+            text: n.message,
+            title: n.title,
+            message: n.message,
+            read: n.isRead,
+            isRead: n.isRead,
+            type: n.type,
+            category: n.category,
+            icon: n.icon,
+            link: n.link,
+            time: formatRelativeTime(n.createdAt)
+          })));
+        }
+      } catch (err) {
+        console.error('Lỗi lấy thông báo:', err);
+      }
+    };
+    fetchNotifications();
+
+    const socket = io(API_BASE);
+
+    socket.on('connect', () => {
+      console.log('[Socket] Connected to server in App.jsx');
+      socket.emit('join_user_room', currentUser.id);
+    });
+
+    socket.on('notification_received', (notif) => {
+      console.log('[Socket] Real-time notification received:', notif);
+      setNotifications(prev => [
+        {
+          id: notif.id,
+          text: notif.message,
+          title: notif.title,
+          message: notif.message,
+          read: notif.isRead,
+          isRead: notif.isRead,
+          type: notif.type,
+          category: notif.category,
+          icon: notif.icon,
+          link: notif.link,
+          time: 'Vừa xong'
+        },
+        ...prev
+      ]);
+
+      const typeStyleMap = {
+        SUCCESS: 'success',
+        WARNING: 'warning',
+        ERROR: 'error',
+        INFO: 'info'
+      };
+      const toastType = typeStyleMap[notif.type] || 'info';
+      showToast.current?.(`${notif.icon ? notif.icon + ' ' : ''}${notif.title}: ${notif.message}`, toastType);
+
+      try {
+        const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-500.wav');
+        audio.volume = 0.3;
+        audio.play().catch(() => {});
+      } catch (e) {}
+    });
+
+    return () => {
+      socket.disconnect();
+    };
+  }, [currentUser?.id]);
+
+  const unreadCount = notifications.filter(n => !n.read && !n.isRead).length;
 
   const [systemLogs, setSystemLogs] = useState(() => JSON.parse(localStorage.getItem('app_logs')) || [
     { id: 1, time: new Date().toLocaleTimeString(), tag: 'sys', text: "Hệ thống Adaptive AI-Assisted Learning khởi động thành công..." },
@@ -1446,6 +1948,26 @@ export default function App() {
     return () => window.removeEventListener('app:toast', handler);
   }, []);
 
+  // Global loading overlay states and event listeners
+  const [globalLoading, setGlobalLoading] = useState(false);
+  const [globalLoadingMessage, setGlobalLoadingMessage] = useState('Đang xử lý dữ liệu...');
+
+  useEffect(() => {
+    const showHandler = (e) => {
+      setGlobalLoadingMessage(e.detail?.message || 'Đang xử lý dữ liệu...');
+      setGlobalLoading(true);
+    };
+    const hideHandler = () => {
+      setGlobalLoading(false);
+    };
+    window.addEventListener('app:show-loading', showHandler);
+    window.addEventListener('app:hide-loading', hideHandler);
+    return () => {
+      window.removeEventListener('app:show-loading', showHandler);
+      window.removeEventListener('app:hide-loading', hideHandler);
+    };
+  }, []);
+
   // AI feedback modal
   const [aiFeedbackModal, setAiFeedbackModal] = useState(null);
 
@@ -1470,23 +1992,25 @@ export default function App() {
       navigateTo('/');
       setActiveTab('login');
     }
-  }, [currentUser, role, parsedRoute.route]);
+  }, [currentUser?.id, role, parsedRoute.route]);
 
-  // Redirect guest users away from leaderboard
+  // Redirect guest users away from leaderboard, and redirect logged-in users away from dashboard leaderboard
   useEffect(() => {
     if ((role === 'guest' || !currentUser) && parsedRoute.route === 'public-leaderboard') {
       showToast.current?.('Vui lòng đăng nhập để xem bảng xếp hạng học tập!', 'warning');
       navigateTo('/');
       setActiveTab('login');
+    } else if (parsedRoute.route === 'dashboard' && parsedRoute.tab === 'leaderboard') {
+      navigateTo('/leaderboard');
     }
-  }, [currentUser, role, parsedRoute.route]);
+  }, [currentUser?.id, role, parsedRoute.route, parsedRoute.tab]);
 
   // Guard dashboard routes and redirect to home if not logged in
   useEffect(() => {
     if ((role === 'guest' || !currentUser) && parsedRoute.route === 'dashboard') {
       navigateTo('/');
     }
-  }, [currentUser, role, parsedRoute.route]);
+  }, [currentUser?.id, role, parsedRoute.route]);
 
   // Redirect teachers visiting /dashboard routes to /teacher routes
   useEffect(() => {
@@ -1494,7 +2018,7 @@ export default function App() {
       const tab = parsedRoute.tab || 'home';
       navigateTo(`/teacher/${tab}`);
     }
-  }, [currentUser, role, parsedRoute.route, parsedRoute.tab]);
+  }, [currentUser?.id, role, parsedRoute.route, parsedRoute.tab]);
 
   // Auto-redirect logged-in admin/teacher away from student dashboard routes to their respective dashboards
   useEffect(() => {
@@ -1506,7 +2030,7 @@ export default function App() {
         navigateTo('/teacher');
       }
     }
-  }, [currentUser, role, currentPath]);
+  }, [currentUser?.id, role, currentPath]);
 
   useEffect(() => {
     if (currentUser) {
@@ -1524,7 +2048,8 @@ export default function App() {
       setSettingsLinkedFb(!!currentUser.linkedFacebook);
       setSettingsLinkedGg(!!currentUser.linkedGoogle);
     }
-  }, [currentUser, activeTab]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id, activeTab]);
 
   // Guard admin routes and redirect to login if not authenticated with real credentials
   useEffect(() => {
@@ -1537,7 +2062,7 @@ export default function App() {
         if (role !== 'admin') setRole('admin');
       }
     }
-  }, [currentPath, role, currentUser]);
+  }, [currentPath, role, currentUser?.id]);
 
   // Sync state data to localStorage
   useEffect(() => {
@@ -1608,7 +2133,7 @@ export default function App() {
         localStorage.setItem('supabase_mock_exams', JSON.stringify(massiveList));
       }
     } catch (err) {
-      console.warn("Không thể tải danh sách đề thi từ backend API.");
+      console.warn("Không thể tải danh sách đề thi từ backend API:", err);
     }
 
     try {
@@ -1618,7 +2143,7 @@ export default function App() {
         setAttemptsHistory(history);
       }
     } catch (err) {
-      console.warn("Không thể tải lịch sử thi thử từ backend API.");
+      console.warn("Không thể tải lịch sử thi thử từ backend API:", err);
     }
 
     // Dynamic loading of admin lists from PostgreSQL / Supabase
@@ -1643,7 +2168,8 @@ export default function App() {
 
   useEffect(() => {
     fetchInitialData();
-  }, [currentUser, activeTab]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id, currentUser?.role, activeTab]);
 
   useEffect(() => {
     const loadCourses = async () => {
@@ -1861,7 +2387,7 @@ export default function App() {
   };
 
   // Student purchases course(s)
-  const handlePaymentSuccess = async (courseIdOrIds) => {
+  const handlePaymentSuccess = async (courseIdOrIds, voucherCode) => {
     const ids = Array.isArray(courseIdOrIds) 
       ? courseIdOrIds.map(id => id.toString()) 
       : [courseIdOrIds.toString()];
@@ -1870,19 +2396,26 @@ export default function App() {
     if (currentUser) {
       for (const id of ids) {
         try {
+          const isDoc = cartCourses.some(c => c.id.toString() === id && (c.type === 'DOCUMENT' || c.driveUrl));
+          if (isDoc) {
+            continue;
+          }
           const targetCourse = courses.find(c => c.id.toString() === id);
           const priceNum = targetCourse 
-            ? parseFloat(String(targetCourse.priceSale || targetCourse.price || targetCourse.priceOriginal).replace(/\D/g, '')) 
+            ? parseFloat(String(targetCourse.priceSale ?? targetCourse.price ?? targetCourse.priceOriginal).replace(/\D/g, '')) 
             : 499000;
           await enrollmentService.enrollCourse(currentUser.id, id, priceNum);
           
           // Persist the course enrollment in the backend database
-          await api.enrollCourseDemo(id);
+          await api.enrollCourseDemo({ courseId: Number(id), voucherCode });
         } catch (err) {
           console.error('Failed to log payment enrollment data:', err);
         }
       }
     }
+
+    // Trigger custom event for documents purchase status sync
+    window.dispatchEvent(new CustomEvent('document-purchased', { detail: { documentIds: ids.map(Number) } }));
 
     // Add to student's list in users database
     const currentList = Array.isArray(usersList) ? usersList : [];
@@ -2091,7 +2624,7 @@ export default function App() {
 
   // Filter dynamic list of course purchases for current user session
   const activeUserCourses = courses.map(c => {
-    const isUnlocked = c.priceSale === 0 || currentUser?.unlockedCourses?.includes(Number(c.id)) || currentUser?.unlockedCourses?.includes(c.id.toString());
+    const isUnlocked = currentUser?.unlockedCourses?.includes(Number(c.id)) || currentUser?.unlockedCourses?.includes(c.id.toString());
     return { ...c, isUnlocked };
   });
 
@@ -2353,7 +2886,7 @@ export default function App() {
       >
         <main 
           className="main-content" 
-          style={(effectiveRole === 'guest' || effectiveRole === 'student' || effectiveRole === 'admin' || effectiveRole === 'teacher' || parsedRoute.route !== 'dashboard' || isEffectiveFullscreen) ? { maxWidth: '100%', padding: 0 } : { maxWidth: '100%' }}
+          style={(effectiveRole === 'guest' || effectiveRole === 'student' || effectiveRole === 'admin' || effectiveRole === 'teacher' || parsedRoute.route !== 'dashboard' || isEffectiveFullscreen) ? { width: '100%', maxWidth: '100%', padding: 0, overflow: 'hidden' } : { maxWidth: '100%' }}
         >
 
           {currentUser && parsedRoute.route.startsWith('mock-') && parsedRoute.route !== 'mock-exam-taking' && (
@@ -2384,7 +2917,8 @@ export default function App() {
                 theme={theme}
                 onToggleTheme={handleToggleTheme}
                 notifications={notifications}
-                onClearNotifications={() => setNotifications(prev => prev.map(n => ({ ...n, read: true })))}
+                onClearNotifications={handleClearNotifications}
+                onNotificationClick={handleNotificationClick}
                 onLogout={handleLogout}
                 onChangePassword={handleChangePassword}
                 onNavigateSettings={() => { navigateTo('/dashboard/settings'); }}
@@ -2479,6 +3013,9 @@ export default function App() {
                 <LandingPage
                   courses={courses}
                   currentUser={currentUser}
+                  notifications={notifications}
+                  unreadCount={unreadCount}
+                  onClearNotifications={handleClearNotifications}
                   onNavigateToAuth={(mode) => { navigateTo('/'); setActiveTab(mode); }}
                   onBackToDashboard={handleBackToDashboard}
                   onLogout={handleLogout}
@@ -2504,6 +3041,11 @@ export default function App() {
                   navigateTo={navigateTo}
                   cartCourses={cartCourses}
                   onAddToCart={handleAddToCart}
+                  onRemoveCourse={(courseId) => {
+                    const updated = cartCourses.filter(c => c.id !== courseId);
+                    setCartCourses(updated);
+                    localStorage.setItem('app_cart_courses', JSON.stringify(updated));
+                  }}
                 />
               )}
             </div>
@@ -2583,7 +3125,8 @@ export default function App() {
                 theme={theme}
                 onToggleTheme={handleToggleTheme}
                 notifications={notifications}
-                onClearNotifications={() => setNotifications(prev => prev.map(n => ({ ...n, read: true })))}
+                onClearNotifications={handleClearNotifications}
+                onNotificationClick={handleNotificationClick}
                 onLogout={handleLogout}
                 onChangePassword={handleChangePassword}
                 onNavigateSettings={() => { navigateTo('/user/settings'); }}
@@ -2671,6 +3214,20 @@ export default function App() {
               <ExamBankPage
                 currentUser={currentUser}
                 navigateTo={navigateTo}
+                cartDocs={cartCourses}
+                onAddToCart={(doc) => {
+                  const docItem = { ...doc, type: 'DOCUMENT' };
+                  handleAddToCart(docItem);
+                }}
+                onCheckoutDoc={(doc) => {
+                  const docItem = { ...doc, type: 'DOCUMENT' };
+                  handleCheckoutCourse(docItem);
+                }}
+                onRemoveDoc={(docId) => {
+                  const updated = cartCourses.filter(c => c.id !== docId);
+                  setCartCourses(updated);
+                  localStorage.setItem('app_cart_courses', JSON.stringify(updated));
+                }}
               />
             </div>
           )}
@@ -2715,13 +3272,17 @@ export default function App() {
                   else if (tab === 'forum') navigateTo('/user/forum');
                   else if (tab === 'documents') navigateTo('/user/documents');
                   else if (tab === 'streak') navigateTo('/user/streak');
+                  else if (tab === 'exam-history') navigateTo('/user/exam-history');
                   else if (tab === 'leaderboard') navigateTo('/user/leaderboard');
                   else if (tab === 'settings') navigateTo('/user/settings');
+                  else if (tab === 'notifications') navigateTo('/user/notifications');
                   else navigateTo('/user/home');
                 }}
                 navigateTo={navigateTo}
                 onUpdateUser={handleSaveProfile}
                 onLogout={handleLogout}
+                unreadCount={unreadCount}
+                notifications={notifications}
               >
 
               {/* Learning path adaptive roadmap tab */}
@@ -2748,25 +3309,6 @@ export default function App() {
               {/* Forum tab */}
               {parsedRoute.tab === 'forum' && (
                 <Forum currentUser={currentUser} />
-              )}
-
-              {/* Leaderboard tab */}
-              {parsedRoute.tab === 'leaderboard' && (
-                <div className="card animate-in" style={{ border: '1px solid #2C3241', boxShadow: 'var(--shadow-md)', padding: '28px', background: '#1C202B', borderRadius: '16px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #2C3241', paddingBottom: '16px', marginBottom: '20px' }}>
-                    <div>
-                      <h3 style={{ fontSize: '20px', fontWeight: '950', color: '#FFF', margin: 0 }}>
-                        🏆 BẢNG XẾP HẠNG HỌC VIÊN XUẤT SẮC
-                      </h3>
-                      <p style={{ fontSize: '13px', color: '#9BA3B2', margin: '4px 0 0 0' }}>
-                        Bảng vàng vinh danh những chiến thần học tập có phong độ cao nhất trên hệ thống EduPath.
-                      </p>
-                    </div>
-                    <span style={{ fontSize: '32px' }}>🏆</span>
-                  </div>
-
-                  <LeaderboardTab currentUser={currentUser} />
-                </div>
               )}
 
               {/* Online Mock Exams tab */}
@@ -3367,6 +3909,14 @@ export default function App() {
                 <LibraryCabinet addLog={addLog} />
               )}
 
+              {/* Notifications Tab */}
+              {parsedRoute.tab === 'notifications' && (
+                <NotificationsPage
+                  currentUser={currentUser}
+                  navigateTo={navigateTo}
+                />
+              )}
+
               {/* Settings Profile tab (natively handled by StudentDashboard) */}
               {false && parsedRoute.tab === 'settings' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '1100px', margin: '0 auto' }} className="animate-in">
@@ -3827,6 +4377,7 @@ export default function App() {
                   onAddQuestion={handleAddQuestion}
                   addLog={addLog}
                   activeTab={parsedRoute.tab}
+                  navigateTo={navigateTo}
                   setActiveTab={(tab) => {
                     const prefix = parsedRoute.route === 'teacher' ? '/teacher' : '/dashboard';
                     if (tab === 'courses') navigateTo(`${prefix}/courses`);
@@ -3907,8 +4458,8 @@ export default function App() {
               setPaymentSuccessRedirect(false);
             }
           }}
-          onPaymentSuccess={(ids) => {
-            handlePaymentSuccess(ids);
+          onPaymentSuccess={(ids, code) => {
+            handlePaymentSuccess(ids, code);
             setPaymentSuccessRedirect(true);
           }}
           onRemoveCourse={(courseId) => {
@@ -3932,10 +4483,22 @@ export default function App() {
         />
       )}
 
+      {/* Announcement Popup Overlay */}
+      {currentAnnouncement && (
+        <AnnouncementPopup
+          announcement={currentAnnouncement}
+          onClose={() => {
+            // Dismiss it for the session
+            setSessionDismissedAnnouncements(prev => [...prev, currentAnnouncement.id]);
+            setCurrentAnnouncement(null);
+          }}
+        />
+      )}
+
 
 
       {/* ── Toast Notifications ── */}
-      <div className="app-toasts-container">
+      <div className={`app-toasts-container ${['ai-tutor', 'flashcards', 'mock-exam-taking', 'mock-exam-result'].includes(parsedRoute?.route) ? 'dark-theme' : ''}`}>
         {toasts.map(t => (
           <div key={t.id} className={`app-toast app-toast-${t.type}`}>
             <span className="app-toast-icon">
@@ -3991,6 +4554,9 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Global premium wave loader overlay */}
+      {globalLoading && <LoadingOverlay message={globalLoadingMessage} />}
 
     </div>
   );

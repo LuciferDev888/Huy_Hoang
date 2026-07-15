@@ -4,7 +4,9 @@ import { prisma } from '../lib/prisma.js';
 import { incrementBothStats } from '../lib/monthlyStats.js';
 import { logSystemEvent } from '../utils/logger.js';
 import { SystemSettingService } from '../services/systemSetting.service.js';
+import { getRAGContext, generateLocalRAGAnswer, getCachedDocumentText, getMultiDocRAGContext, generateLocalFlashcards, extractTextFromFile } from '../utils/rag.js';
 import fs from 'fs';
+import { exec } from 'child_process';
 
 // Bộ đếm lượt hỏi AI trong ngày của học sinh (Reset hàng ngày)
 const dailyQuestionCounter = new Map<number, { count: number; date: string }>();
@@ -41,18 +43,69 @@ function processLines(buffer: string, res: Response): string {
   return lastLine;
 }
 
-// Server-Sent Events (SSE) AI Streaming Chat
 export async function streamAIChat(req: AuthRequest, res: Response) {
-  const { message } = req.body;
+  const { message, lessonId } = req.body;
   const studentId = req.user?.id;
   const role = req.user?.role?.toUpperCase();
 
-  // Kiểm tra giới hạn câu hỏi AI miễn phí của học sinh
+  // Retrieve lesson context and RAG documents beforehand
+  let lesson = null;
+  let ragContext = '';
+  if (lessonId && !isNaN(Number(lessonId))) {
+    try {
+      lesson = await prisma.lesson.findUnique({
+        where: { id: Number(lessonId) }
+      });
+      if (lesson) {
+        const rawQuery = message && message.includes('Học sinh hỏi: ')
+          ? message.split('Học sinh hỏi: ').pop()
+          : message;
+
+        // Fetch all documents for all lessons in this course
+        const allLessonsInCourse = await prisma.lesson.findMany({
+          where: { courseId: lesson.courseId },
+          include: { documents: true }
+        });
+        
+        const allDocs = allLessonsInCourse.flatMap(l => l.documents);
+        
+        // Extract and cache text for all documents in the course
+        const docTexts: { title: string, text: string }[] = [];
+        for (const doc of allDocs) {
+          try {
+            const docText = await getCachedDocumentText(doc.id, doc.fileUrl);
+            if (docText && docText.trim()) {
+              docTexts.push({ title: doc.title, text: docText });
+            }
+          } catch (docErr: any) {
+            console.error(`[streamAIChat] Error parsing doc #${doc.id}:`, docErr.message);
+          }
+        }
+
+        // If we extracted text from course documents, perform multi-doc RAG search
+        if (docTexts.length > 0) {
+          ragContext = getMultiDocRAGContext(docTexts, rawQuery || '');
+        } else if (lesson.content) {
+          // Fallback to searching lesson description/content if no documents found
+          ragContext = getRAGContext(lesson.content, rawQuery || '');
+        }
+      }
+    } catch (err) {
+      console.error('[streamAIChat] Failed to fetch lesson context:', err);
+    }
+  }
+
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  const model = process.env.OPENROUTER_MODEL || 'openrouter/free';
+
+  // Check free AI question limits for non-PRO student
+  let isFreeLimitReached = false;
+  let maxLimit = 20;
   if (studentId && role === 'STUDENT') {
     const user = await prisma.user.findUnique({ where: { id: studentId } });
     if (user && !user.isPro) {
       const todayStr = new Date().toISOString().split('T')[0];
-      const maxLimit = SystemSettingService.getNumber('FREE_AI_QUESTION_LIMIT') || 20;
+      maxLimit = SystemSettingService.getNumber('FREE_AI_QUESTION_LIMIT') || 20;
 
       const record = dailyQuestionCounter.get(studentId) || { count: 0, date: todayStr };
       if (record.date !== todayStr) {
@@ -61,37 +114,37 @@ export async function streamAIChat(req: AuthRequest, res: Response) {
       }
 
       if (record.count >= maxLimit) {
-        res.setHeader('Content-Type', 'text/event-stream');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.setHeader('Connection', 'keep-alive');
-        res.flushHeaders();
-        res.write(`data: ${JSON.stringify({ text: `Bạn đã đạt giới hạn ${maxLimit} câu hỏi AI miễn phí trong ngày hôm nay. Hãy nâng cấp tài khoản Premium để hỏi không giới hạn!` })}\n\n`);
-        res.write('data: [DONE]\n\n');
-        res.end();
-        return;
+        isFreeLimitReached = true;
+      } else {
+        record.count++;
+        dailyQuestionCounter.set(studentId, record);
       }
-
-      record.count++;
-      dailyQuestionCounter.set(studentId, record);
     }
   }
 
+  // Set SSE Headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  const model = process.env.OPENROUTER_MODEL || 'openrouter/free';
-
-  if (!apiKey) {
-    res.write(`data: ${JSON.stringify({ text: "Hệ thống AI Gia sư đang bảo trì (thiếu cấu hình API Key)." })}\n\n`);
+  // Handle limits and missing keys with local RAG fallback
+  if (isFreeLimitReached || !apiKey) {
+    const localAnswer = generateLocalRAGAnswer(ragContext, message || '', lesson?.title || '');
+    res.write(`data: ${JSON.stringify({ text: localAnswer })}\n\n`);
     res.write('data: [DONE]\n\n');
     res.end();
     return;
   }
 
-  const systemPrompt = {
+  const systemPrompt = ragContext ? {
+    role: 'system',
+    content: `Bạn là Gia sư AI EduPath. Hãy trả lời câu hỏi của học sinh ngắn gọn, dễ hiểu dựa trên các tài liệu bài học ôn tập sau:
+    \"\"\"
+    ${ragContext}
+    \"\"\"
+    Hãy chỉ ra hoặc trích dẫn tiêu đề tài liệu ôn tập tương ứng (ví dụ: "[Tài liệu: ...]") khi trả lời nếu tài liệu đó chứa thông tin liên quan. Trả lời bằng tiếng Việt.`
+  } : {
     role: 'system',
     content: 'Bạn là EduBot. Trả lời cực ngắn gọn (dưới 10 từ) bằng tiếng Việt.'
   };
@@ -102,7 +155,7 @@ export async function streamAIChat(req: AuthRequest, res: Response) {
     res.end();
   });
 
-  const slicedMessage = message ? String(message).substring(0, 60) : '';
+  const slicedMessage = message ? String(message).substring(0, lessonId ? 250 : 60) : '';
 
   try {
     let response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -121,7 +174,7 @@ export async function streamAIChat(req: AuthRequest, res: Response) {
         ],
         stream: true,
         temperature: 0.7,
-        max_tokens: 40
+        max_tokens: ragContext ? 250 : 40
       }),
       signal: abortController.signal
     });
@@ -874,6 +927,22 @@ export async function syncMindmapNodes(mindmapId: number, content: any) {
     );
   }
 
+  const keysToSync = new Set(nodesToSync.map(n => n.nodeKey));
+  const keysToDelete = existingNodes
+    .filter(n => !keysToSync.has(n.nodeKey))
+    .map(n => n.nodeKey);
+
+  if (keysToDelete.length > 0) {
+    operations.push(
+      prisma.mindmapNode.deleteMany({
+        where: {
+          mindmapId,
+          nodeKey: { in: keysToDelete }
+        }
+      })
+    );
+  }
+
   if (operations.length > 0) {
     await prisma.$transaction(operations);
   }
@@ -1027,6 +1096,20 @@ export async function deleteMindmap(req: AuthRequest, res: Response) {
   }
 }
 
+function cleanAIResponseContent(content: string): string {
+  if (!content) return '';
+  const lines = content.split('\n');
+  const filteredLines = lines.filter(line => {
+    const trimmed = line.trim().toLowerCase();
+    if (trimmed.startsWith('user safety:') || trimmed.startsWith('user safety :')) return false;
+    if (trimmed.startsWith('moderation:') || trimmed.startsWith('moderation :')) return false;
+    if (trimmed.startsWith('safety:') || trimmed.startsWith('safety :')) return false;
+    if (trimmed === 'user safety: safe' || trimmed === 'moderation: safe') return false;
+    return true;
+  });
+  return filteredLines.join('\n').trim();
+}
+
 export async function generateFlashcards(req: AuthRequest, res: Response) {
   const { text } = req.body;
   if (!text || !text.trim()) {
@@ -1037,7 +1120,8 @@ export async function generateFlashcards(req: AuthRequest, res: Response) {
   const model = process.env.OPENROUTER_MODEL || 'openrouter/free';
 
   if (!apiKey) {
-    return res.status(500).json({ success: false, error: 'Hệ thống AI chưa được cấu hình API Key.' });
+    const localCards = generateLocalFlashcards(text);
+    return res.status(200).json({ success: true, data: localCards });
   }
 
   try {
@@ -1050,9 +1134,10 @@ Yêu cầu cực kỳ quan trọng:
 Mặt trước 1 = Mặt sau 1; Mặt trước 2 = Mặt sau 2; Mặt trước 3 = Mặt sau 3; Mặt trước 4 = Mặt sau 4; Mặt trước 5 = Mặt sau 5`;
 
     const content = await callOpenRouter(prompt, 500, 0.5);
+    const cleanedContent = cleanAIResponseContent(content);
 
     // Parse outline string to expected flashcards JSON array
-    const rawParts = content.split(/[;\n]+/).map((p: string) => p.trim());
+    const rawParts = cleanedContent.split(/[;\n]+/).map((p: string) => p.trim());
     const cards: any[] = [];
 
     for (const rawPart of rawParts) {
@@ -1094,17 +1179,165 @@ Mặt trước 1 = Mặt sau 1; Mặt trước 2 = Mặt sau 2; Mặt trước 3
       }
     }
 
-    const parsedFlashcards = cards.length > 0 ? cards : [
-      { front: 'Thuật ngữ 1', back: 'Ý nghĩa định nghĩa 1' },
-      { front: 'Thuật ngữ 2', back: 'Ý nghĩa định nghĩa 2' },
-      { front: 'Thuật ngữ 3', back: 'Ý nghĩa định nghĩa 3' }
-    ];
-
-    return res.status(200).json({ success: true, data: parsedFlashcards });
+    const parsedFlashcards = cards.length > 0 ? cards : generateLocalFlashcards(text);
     return res.status(200).json({ success: true, data: parsedFlashcards });
   } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
+    console.warn('[Flashcards AI Error] Falling back to local simulated generator:', err.message);
+    const localCards = generateLocalFlashcards(text);
+    return res.status(200).json({ success: true, data: localCards });
   }
+}
+
+export async function generateFlashcardMnemonic(req: AuthRequest, res: Response) {
+  const { front, back } = req.body;
+  if (!front || !back) {
+    return res.status(400).json({ success: false, error: 'Thiếu nội dung Mặt trước hoặc Mặt sau của thẻ.' });
+  }
+
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    const fallback = generateLocalMnemonic(front, back);
+    return res.status(200).json({ success: true, mnemonic: fallback });
+  }
+
+  try {
+    const prompt = `Bạn là chuyên gia siêu trí nhớ hàng đầu thế giới. Hãy thiết kế đúng 1 mẹo ghi nhớ (mnemonic memory trick) cực ngắn gọn (dưới 15 từ) bằng tiếng Việt để giúp người học liên tưởng và nhớ ngay khái niệm này:
+Mặt trước: "${front}"
+Mặt sau: "${back}"
+
+Yêu cầu:
+- Hãy làm cho mẹo này thật vui nhộn, tạo âm thanh tương tự, có vần điệu hoặc liên tưởng hình ảnh độc đáo.
+- Chỉ trả về duy nhất nội dung mẹo ghi nhớ, không kèm theo bất cứ giải thích, lời chào hay tiêu đề nào khác.`;
+
+    const content = await callOpenRouter(prompt, 100, 0.7);
+    const cleaned = cleanAIResponseContent(content).replace(/^(mẹo ghi nhớ|mẹo|mnemonic)[:\s-]*/i, '').trim();
+    return res.status(200).json({ success: true, mnemonic: cleaned || generateLocalMnemonic(front, back) });
+  } catch (err: any) {
+    console.warn('[Mnemonic AI Error] Falling back to local generator:', err.message);
+    const fallback = generateLocalMnemonic(front, back);
+    return res.status(200).json({ success: true, mnemonic: fallback });
+  }
+}
+
+function generateLocalMnemonic(front: string, back: string): string {
+  const frontLower = front.toLowerCase();
+  
+  if (frontLower.includes('dna')) return 'Dễ Nhớ Axit (DNA)';
+  if (frontLower.includes('rna')) return 'Riêng Nó Axit (RNA)';
+  if (frontLower.includes('departure')) return 'Xe đò ĐI BA (Depar) khởi hành lúc TƯ (ture).';
+  if (frontLower.includes('destination')) return 'ĐI TỚI NƠI ĐẾN (Destination) để tìm niềm vui.';
+  if (frontLower.includes('tiệm cận đứng')) return 'Đứng nhìn x (TCĐ x = x0), Ngang nhìn y (TCN y = y0).';
+  
+  return `Liên tưởng từ ghép âm thanh "${front.substring(0, 5)}" tương tự với ý nghĩa "${back.substring(0, 15)}...".`;
+}
+
+export async function generateFlashcardsOCR(req: AuthRequest, res: Response) {
+  if (!req.file) {
+    return res.status(400).json({ success: false, error: 'Vui lòng cung cấp tệp hình ảnh, tệp văn bản hoặc tài liệu (PDF, Word).' });
+  }
+
+  const filePath = req.file.path;
+  const ext = path.extname(req.file.originalname).toLowerCase();
+
+  // Parse document files directly in Node to guarantee instant processing without Python dependencies
+  if (['.txt', '.md', '.pdf', '.docx', '.doc'].includes(ext)) {
+    try {
+      const text = await extractTextFromFile(filePath, ext);
+      
+      // Clean up file
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+
+      const cards: { front: string; back: string }[] = [];
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+      
+      let hasSeparator = false;
+      for (const line of lines) {
+        for (const sep of [':', '=', '-', '—', '–', '|', '\t', '  ']) {
+          if (line.includes(sep)) {
+            const parts = line.split(sep);
+            if (parts[0].trim() && parts[1].trim()) {
+              hasSeparator = true;
+              break;
+            }
+          }
+        }
+      }
+
+      if (hasSeparator) {
+        for (const line of lines) {
+          let separator = null;
+          for (const sep of [':', '=', '-', '—', '–', '|', '\t', '  ']) {
+            if (line.includes(sep)) {
+              separator = sep;
+              break;
+            }
+          }
+          
+          if (separator) {
+            const parts = line.split(separator);
+            const front = parts[0].trim().replace(/\*\*/g, '').replace(/__/g, '');
+            const back = parts.slice(1).join(separator).trim().replace(/\*\*/g, '').replace(/__/g, '');
+            if (front && back) {
+              cards.push({ front, back });
+            }
+          }
+        }
+      } else {
+        // Pair up even and odd lines
+        for (let i = 0; i < lines.length - 1; i += 2) {
+          const front = lines[i].replace(/\*\*/g, '').replace(/__/g, '');
+          const back = lines[i+1].replace(/\*\*/g, '').replace(/__/g, '');
+          if (front && back) {
+            cards.push({ front, back });
+          }
+        }
+      }
+
+      return res.status(200).json({ success: true, data: cards });
+    } catch (readErr: any) {
+      console.error('[OCR Controller] Read document file error:', readErr.message);
+      return res.status(500).json({ success: false, error: `Lỗi đọc tài liệu: ${readErr.message}` });
+    }
+  }
+
+  const scriptPath = path.resolve(process.cwd(), 'src/scripts/ocr_processor.py');
+  const command = `python "${scriptPath}" "${filePath}"`;
+
+  exec(command, (error, stdout, stderr) => {
+    // Delete file after processing to save disk space
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    } catch (unlinkErr: any) {
+      console.error('[OCR Controller] Failed to delete temp file:', unlinkErr.message);
+    }
+
+    if (error) {
+      console.error('[OCR Controller] Python exec error:', error.message);
+      return res.status(500).json({ success: false, error: `Không thể thực thi mã phân tích: ${error.message}` });
+    }
+
+    try {
+      const output = JSON.parse(stdout.trim());
+      if (output.success) {
+        return res.status(200).json({ success: true, data: output.cards });
+      } else {
+        if (output.error === 'dependencies_missing') {
+          return res.status(500).json({ 
+            success: false, 
+            error: 'Hệ thống thiếu thư viện Python để xử lý OCR. Vui lòng cài đặt: pip install Pillow pytesseract' 
+          });
+        }
+        return res.status(500).json({ success: false, error: output.details || output.error });
+      }
+    } catch (parseErr: any) {
+      console.error('[OCR Controller] JSON parse error:', parseErr.message, 'Stdout was:', stdout);
+      return res.status(500).json({ success: false, error: 'Định dạng dữ liệu trả về từ script phân tích không hợp lệ.' });
+    }
+  });
 }
 
 // =========================================================================
@@ -1120,6 +1353,8 @@ async function callOpenRouter(prompt: string, maxTokens = 1500, temp = 0.5) {
 
   const candidateModels = [
     primaryModel,
+    'google/gemma-2-9b-it:free',
+    'meta-llama/llama-3-8b-instruct:free',
     'google/gemma-4-31b-it:free',
     'qwen/qwen3-coder:free',
     'meta-llama/llama-3.3-70b-instruct:free',
@@ -1157,7 +1392,7 @@ async function callOpenRouter(prompt: string, maxTokens = 1500, temp = 0.5) {
           const content = (data.choices?.[0]?.message?.content || '').trim();
           if (content) {
             console.log(`[OpenRouter] Success with model: ${currentModel}`);
-            return content;
+            return cleanAIResponseContent(content);
           }
         } catch (jsonErr) {
           console.warn(`[OpenRouter] Failed to parse JSON from model ${currentModel}:`, jsonErr);
@@ -1200,7 +1435,7 @@ function findNodeAndParentContext(node: any, targetKey: string, currentPath = '0
 
 export async function generateNodeQuiz(req: AuthRequest, res: Response) {
   const userId = req.user?.id;
-  const { mindmapId, nodeKey } = req.body;
+  const { mindmapId, nodeKey, refresh } = req.body;
 
   if (!userId) {
     return res.status(401).json({ success: false, error: 'Chưa xác thực!' });
@@ -1242,13 +1477,19 @@ export async function generateNodeQuiz(req: AuthRequest, res: Response) {
       return res.status(404).json({ success: false, error: 'Không tìm thấy nút kiến thức.' });
     }
 
+    if (refresh) {
+      await prisma.quizQuestion.deleteMany({
+        where: { mindmapNodeId: node.id }
+      });
+    }
+
     const existingQuestions = await prisma.quizQuestion.findMany({
       where: { mindmapNodeId: node.id }
     });
 
-    let questions = existingQuestions;
+    let questions = refresh ? [] : existingQuestions;
 
-    if (existingQuestions.length === 0) {
+    if (questions.length === 0) {
       const parsedInfo = findNodeAndParentContext(mindmap.content, String(nodeKey));
       const parentContextText = parsedInfo ? parsedInfo.parentContext : 'Không có';
       const nodeName = node.name;

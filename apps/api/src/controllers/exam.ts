@@ -5,10 +5,11 @@ import { Difficulty } from '@prisma/client';
 import { importExamFromObject } from '../utils/examImporter.js';
 import { logUserActivity, logAttendanceInternal } from './gamification.js';
 import { incrementBothStats } from '../lib/monthlyStats.js';
+import { LeaderboardService } from '../services/leaderboard.service.js';
 
 
 export async function getExams(req: AuthRequest, res: Response) {
-  const { subject, year, source, difficulty, grade, status } = req.query;
+  const { subject, year, source, difficulty, grade, status, teacherId } = req.query;
   const userRole = req.user?.role;
 
   try {
@@ -20,6 +21,10 @@ export async function getExams(req: AuthRequest, res: Response) {
 
     if (grade && grade !== 'All') {
       where.grade = Number(grade);
+    }
+
+    if (teacherId) {
+      where.createdBy = Number(teacherId);
     }
 
     if (userRole === 'STUDENT' || !userRole) {
@@ -55,6 +60,15 @@ export async function getExamById(req: Request, res: Response) {
     });
 
     if (!exam) return res.status(404).json({ success: false, error: 'Không tìm thấy đề thi!' });
+
+    const reqAuth = req as AuthRequest;
+    const userRole = reqAuth.user?.role;
+    const userId = reqAuth.user?.id;
+    if (exam.status !== 'published') {
+      if (userRole === 'STUDENT' || !userRole || (userRole === 'TEACHER' && exam.createdBy !== userId)) {
+        return res.status(403).json({ success: false, error: 'Bạn không có quyền truy cập đề thi này!' });
+      }
+    }
 
     const questions = exam.examQuestions.map(eq => {
       const q = eq.question;
@@ -332,6 +346,13 @@ export async function submitAttempt(req: AuthRequest, res: Response) {
       console.error('[MonthlyStats] Lỗi cập nhật totalAttempts:', err);
     }
 
+    // Invalidate leaderboard cache for score updates
+    try {
+      LeaderboardService.invalidateCache();
+    } catch (cacheErr: any) {
+      console.error('[submitAttempt Cache Invalidation Error]', cacheErr.message);
+    }
+
     return res.status(200).json({ success: true, data: updatedAttempt });
 
   } catch (err: any) {
@@ -384,6 +405,18 @@ export async function getExamQuestionsPublic(req: Request, res: Response) {
   const { id } = req.params;
 
   try {
+    const exam = await prisma.exam.findUnique({ where: { id: Number(id) } });
+    if (!exam) return res.status(404).json({ success: false, error: 'Không tìm thấy đề thi!' });
+
+    const reqAuth = req as AuthRequest;
+    const userRole = reqAuth.user?.role;
+    const userId = reqAuth.user?.id;
+    if (exam.status !== 'published') {
+      if (userRole === 'STUDENT' || !userRole || (userRole === 'TEACHER' && exam.createdBy !== userId)) {
+        return res.status(403).json({ success: false, error: 'Bạn không có quyền truy cập câu hỏi của đề thi này!' });
+      }
+    }
+
     const examQuestions = await prisma.examQuestion.findMany({
       where: { examId: Number(id) },
       include: { question: true },
@@ -1231,13 +1264,21 @@ export async function createSmartRetake(req: AuthRequest, res: Response) {
           include: { attemptAnswers: { include: { question: true } } }
         });
         if (prevAttempt) {
-          const wrongAnswers = prevAttempt.attemptAnswers.filter(a => !a.isCorrect);
+          // A question is incorrect if it has a wrong answer or was skipped (no attemptAnswer record)
+          const incorrectExamQuestions = exam.examQuestions.filter(eq => {
+            const ans = prevAttempt.attemptAnswers.find(a => a.questionId === eq.questionId);
+            return !ans || !ans.isCorrect;
+          });
+
           if (mode === 'wrong_similar') {
-            baseQuestions = wrongAnswers.map(a => exam.examQuestions.find(eq => eq.questionId === a.questionId)).filter(Boolean) as any;
+            baseQuestions = incorrectExamQuestions;
           } else {
             const rightAnswers = prevAttempt.attemptAnswers.filter(a => a.isCorrect);
-            const selectedWrong = wrongAnswers.slice(0, 7).map(a => exam.examQuestions.find(eq => eq.questionId === a.questionId)).filter(Boolean);
-            const selectedRight = rightAnswers.slice(0, 10 - selectedWrong.length).map(a => exam.examQuestions.find(eq => eq.questionId === a.questionId)).filter(Boolean);
+            const selectedWrong = incorrectExamQuestions.slice(0, 7);
+            const rightExamQuestions = rightAnswers
+              .map(a => exam.examQuestions.find(eq => eq.questionId === a.questionId))
+              .filter(Boolean);
+            const selectedRight = rightExamQuestions.slice(0, 10 - selectedWrong.length).map(a => exam.examQuestions.find(eq => eq.questionId === a.questionId)).filter(Boolean);
             baseQuestions = [...selectedWrong, ...selectedRight] as any;
           }
         }
@@ -1391,13 +1432,17 @@ Cấu trúc mỗi câu hỏi trong JSON phải chính xác như sau:
         include: { attemptAnswers: true }
       });
       if (prevAttempt) {
+        const answeredIds = prevAttempt.attemptAnswers.map(a => a.questionId);
         const wrongIds = prevAttempt.attemptAnswers
           .filter(a => !a.isCorrect)
           .map(a => a.questionId);
         
-        if (wrongIds.length > 0) {
-          filteredQuestions = exam.examQuestions.filter(eq => wrongIds.includes(eq.questionId));
-        } else {
+        // A question is incorrect if it is wrong or skipped (not in answeredIds)
+        filteredQuestions = exam.examQuestions.filter(eq => 
+          wrongIds.includes(eq.questionId) || !answeredIds.includes(eq.questionId)
+        );
+
+        if (filteredQuestions.length === 0) {
           // Adaptive fallback: if 100% correct, challenge them with HARD questions
           filteredQuestions = exam.examQuestions.filter(eq => eq.question.difficulty === 'HARD');
           if (filteredQuestions.length === 0) {
@@ -1469,6 +1514,20 @@ Cấu trúc mỗi câu hỏi trong JSON phải chính xác như sau:
 export async function importExam(req: AuthRequest, res: Response) {
   const adminId = req.user?.id;
   if (!adminId) return res.status(401).json({ success: false, error: 'Chưa xác thực!' });
+
+  const userRole = req.user?.role;
+  if (userRole === 'TEACHER') {
+    const teacher = await prisma.teacher.findUnique({
+      where: { userId: adminId }
+    });
+
+    if (!teacher || teacher.status !== 'APPROVED') {
+      return res.status(403).json({
+        success: false,
+        error: 'Hồ sơ Giáo viên của bạn chưa được duyệt! Bạn chỉ có thể tạo hoặc nhập đề thi sau khi được Admin phê duyệt.'
+      });
+    }
+  }
 
   try {
     const examData = req.body;
@@ -1567,8 +1626,13 @@ export async function updateExamStatus(req: AuthRequest, res: Response) {
   const { id } = req.params;
   const { status } = req.body;
   const userId = req.user?.id;
+  const userRole = req.user?.role;
 
   if (!userId) return res.status(401).json({ success: false, error: 'Chưa xác thực!' });
+
+  if (userRole === 'TEACHER' && status === 'published') {
+    return res.status(403).json({ success: false, error: 'Giáo viên không có quyền phê duyệt đề thi!' });
+  }
 
   try {
     const exam = await prisma.exam.findUnique({ where: { id: Number(id) } });

@@ -42,6 +42,7 @@ model User {
   forumPosts         ForumPost[]
   forumComments      ForumComment[]
   forumReactions     ForumReaction[]
+  savedPosts         SavedForumPost[]
   moderatedCategories ForumCategory[]     @relation("CategoryModerators")
   createdGroups      StudyGroup[]        @relation("GroupCreator")
   groupMemberships   StudyGroupMember[]
@@ -71,6 +72,10 @@ model User {
   warningsReceived     Warning[]           @relation("UserWarnings")
   learningAttendances  LearningAttendance[]
   userEffort           UserEffort?
+  voucherUsages        VoucherUsage[]
+  voucherReservations  VoucherReservation[]
+  documentRatings      DocumentRating[]
+  documentPurchases    DocumentPurchase[]
 }
 
 
@@ -89,6 +94,9 @@ model Student {
   school       String?
   targetScore      Float?
   targetUniversity String?
+
+  @@index([grade])
+  @@index([province])
 }
 
 model Teacher {
@@ -202,8 +210,16 @@ model Exam {
   source         String?
   totalQuestions Int            @default(0)
   difficulty     Difficulty     @default(MEDIUM)
-  status         String         @default("published")
+  status         String         @default("pending")
   grade          Int?
+  approvedAt     DateTime?
+  approvedBy     Int?
+  rejectedAt     DateTime?
+  rejectedBy     Int?
+  rejectedReason String?        @db.Text
+  hiddenAt       DateTime?
+  hiddenBy       Int?
+  hiddenReason   String?        @db.Text
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @default(now()) @updatedAt
   examQuestions  ExamQuestion[]
@@ -243,6 +259,9 @@ model TestAttempt {
   student             Student             @relation(fields: [studentId], references: [userId], onDelete: Cascade)
   attemptAnswers      TestAttemptAnswer[]
   examEvents          ExamEvent[]
+
+  @@index([studentId, status])
+  @@index([examId])
 }
 
 model ExamEvent {
@@ -286,15 +305,54 @@ model ChatMessage {
   createdAt DateTime @default(now())
   student   Student  @relation(fields: [studentId], references: [userId], onDelete: Cascade)
 }
+enum NotificationType {
+  INFO
+  SUCCESS
+  WARNING
+  ERROR
+}
+
+enum NotificationCategory {
+  SYSTEM
+  ACCOUNT
+  COURSE
+  EXAM
+  PAYMENT
+  AI
+  REPORT
+  TEACHER
+  ADMIN
+}
 
 model Notification {
-  id        Int      @id @default(autoincrement())
+  id        Int                  @id @default(autoincrement())
   userId    Int
   title     String
   message   String
-  isRead    Boolean  @default(false)
-  createdAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType     @default(INFO)
+  category  NotificationCategory @default(SYSTEM)
+  icon      String?
+  link      String?
+  isRead    Boolean              @default(false)
+  readAt    DateTime?
+  metadata  Json?
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @default(now()) @updatedAt
+  user      User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model NotificationTemplate {
+  id          Int                  @id @default(autoincrement())
+  code        String               @unique
+  title       String
+  message     String
+  type        NotificationType     @default(INFO)
+  category    NotificationCategory @default(SYSTEM)
+  icon        String?
+  defaultLink String?
+  isActive    Boolean              @default(true)
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @default(now()) @updatedAt
 }
 
 model Review {
@@ -486,6 +544,7 @@ model ForumPost {
   studyGroupId   Int?
   studyGroup     StudyGroup?     @relation(fields: [studyGroupId], references: [id], onDelete: SetNull)
   reports        ForumReport[]
+  savedBy        SavedForumPost[]
   
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
@@ -534,6 +593,19 @@ model ForumReaction {
   @@unique([userId, commentId, type])
   @@index([postId])
   @@index([commentId])
+}
+
+model SavedForumPost {
+  id        Int       @id @default(autoincrement())
+  userId    Int
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  postId    Int
+  post      ForumPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
+
+  @@unique([userId, postId])
+  @@index([userId])
+  @@index([postId])
 }
 
 model ForumTag {
@@ -648,8 +720,11 @@ model UserGamification {
   streakDays        Int             @default(0)
   lastActiveDate    DateTime?
   milestonesReached Json?
-  
+
   updatedAt         DateTime        @updatedAt
+
+  @@index([xp])
+  @@index([streakDays])
 }
 
 model ForumReport {
@@ -700,7 +775,10 @@ model DocumentResource {
   updatedAt           DateTime @default(now()) @updatedAt
   commissionPercent   Float?
   markdownDescription String?  @db.Text
+  previewUrl          String?
   comments            DocumentComment[]
+  ratings             DocumentRating[]
+  purchases           DocumentPurchase[]
 
   @@map("document_resources")
 }
@@ -1022,24 +1100,33 @@ model AffiliateMaterial {
 }
 
 model TeacherMaterial {
-  id            Int       @id @default(autoincrement())
-  teacherId     Int
-  teacher       Teacher   @relation(fields: [teacherId], references: [userId], onDelete: Cascade)
-  title         String
-  description   String?
-  subject       String
-  grade         String?
-  fileUrl       String
-  fileType      String
-  fileSize      Int
-  thumbnailUrl  String?
-  tags          String[]
-  isPublic      Boolean   @default(false)
-  isApproved    Boolean   @default(false)
-  downloadCount Int       @default(0)
-  viewCount     Int       @default(0)
-  price         Float     @default(0)
-  uploadedAt    DateTime  @default(now())
+  id              Int            @id @default(autoincrement())
+  teacherId       Int
+  teacher         Teacher        @relation(fields: [teacherId], references: [userId], onDelete: Cascade)
+  title           String
+  description     String?
+  subject         String
+  grade           String?
+  fileUrl         String
+  fileType        String
+  fileSize        Int
+  thumbnailUrl    String?
+  tags            String[]
+  status          MaterialStatus @default(DRAFT)
+  previewUrl      String?
+  previewStatus   PreviewStatus?
+  pageCount       Int?
+  rejectionReason String?
+  approvedBy      Int?
+  approvedAt      DateTime?
+  rejectedBy      Int?
+  rejectedAt      DateTime?
+  hiddenBy        Int?
+  hiddenAt        DateTime?
+  downloadCount   Int            @default(0)
+  viewCount       Int            @default(0)
+  price           Float          @default(0)
+  uploadedAt      DateTime       @default(now())
 }
 
 // ── Thống kê hàng tháng (Dashboard Admin) ──
@@ -1185,6 +1272,153 @@ model SystemSetting {
 
   @@map("system_settings")
 }
+
+enum VoucherStatus {
+  ACTIVE
+  INACTIVE
+  EXPIRED
+}
+
+enum VoucherDiscountType {
+  PERCENT
+  FIXED
+}
+
+enum VoucherApplicableType {
+  ALL
+  COURSE
+  PREMIUM
+  SPECIFIC_COURSES
+}
+
+model Voucher {
+  id                  Int                   @id @default(autoincrement())
+  code                String                @unique
+  name                String
+  description         String?               @db.Text
+  discountType        VoucherDiscountType
+  discountValue       Float                 // Tỉ lệ % hoặc số tiền cố định
+  minimumOrderValue   Float                 @default(0) // Giá trị đơn hàng tối thiểu
+  maximumDiscount     Float?                // Giảm tối đa (chỉ áp dụng cho PERCENT)
+  totalQuantity       Int?                  // Tổng lượt sử dụng tối đa (null = không giới hạn)
+  usedQuantity        Int                   @default(0)
+  limitPerUser        Int                   @default(1) // Số lần sử dụng tối đa của mỗi user (1, 2, 5...)
+  applicableType      VoucherApplicableType @default(ALL)
+  applicableCourseIds Int[]                 // Danh sách mã khóa học cụ thể áp dụng
+  status              VoucherStatus         @default(ACTIVE)
+  startDate           DateTime?
+  endDate             DateTime?
+  createdBy           Int
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+  usages              VoucherUsage[]
+  reservations        VoucherReservation[]
+
+  @@map("vouchers")
+}
+
+model VoucherUsage {
+  id             Int          @id @default(autoincrement())
+  voucherId      Int
+  voucher        Voucher      @relation(fields: [voucherId], references: [id], onDelete: Cascade)
+  userId         Int
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  paymentId      String?      // Mã giao dịch/hóa đơn liên quan (transactionId)
+  discountAmount Float        // Số tiền thực tế đã giảm trong giao dịch
+  usedAt         DateTime     @default(now())
+
+  @@map("voucher_usages")
+}
+
+model VoucherReservation {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  voucherId Int
+  voucher   Voucher  @relation(fields: [voucherId], references: [id], onDelete: Cascade)
+  courseId  Int?     // null nếu nâng cấp Premium
+  isPremium Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, voucherId, courseId, isPremium])
+  @@map("voucher_reservations")
+}
+
+model Announcement {
+  id                Int      @id @default(autoincrement())
+  title             String
+  type              String   // EVENT, VOUCHER, PROMOTION, MAINTENANCE, NEWS
+  content           String   @db.Text // Rich Text HTML
+  bannerUrl         String?  // Optional Banner Image
+  voucherCode       String?  // Optional Voucher code
+  showCopyButton    Boolean  @default(true)
+  buttonText        String?  // Action Button Text
+  buttonUrl         String?  // Action Button Link
+  buttonTarget      String   @default("_blank") // _self or _blank
+  targetRoles       String[] // e.g. ["GUEST", "STUDENT", "TEACHER", "ADMIN"] or ["EVERYONE"]
+  targetPages       String[] // e.g. ["Home", "Courses", "Practice", "Exam", "AI Coach", "Profile", "Dashboard"] or ["All Pages"]
+  allowHide         Boolean  @default(true)
+  hideDurationHours Int      @default(24)
+  priority          Int      @default(0)
+  animation         String   @default("fade") // fade, zoom, slide, bounce
+  status            String   @default("DRAFT") // DRAFT, SCHEDULED, ACTIVE, PAUSED, EXPIRED
+  startAt           DateTime
+  endAt             DateTime
+  createdBy         Int
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@map("announcements")
+}
+
+enum MaterialStatus {
+  DRAFT
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  HIDDEN
+}
+
+enum PreviewStatus {
+  PROCESSING
+  READY
+  FAILED
+}
+
+model DocumentRating {
+  id             Int              @id @default(autoincrement())
+  documentId     Int
+  studentId      Int
+  rating         Int
+  comment        String?          @db.Text
+  isHidden       Boolean          @default(false)
+  hiddenReason   String?          @db.Text
+  hiddenBy       Int?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt @default(now())
+
+  document       DocumentResource @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  student        User             @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, studentId])
+  @@map("document_ratings")
+}
+
+model DocumentPurchase {
+  id            Int              @id @default(autoincrement())
+  studentId     Int
+  documentId    Int
+  paidAt        DateTime         @default(now())
+  transactionId String           @unique
+  amount        Float            @default(0)
+
+  student       User             @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  document      DocumentResource @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, documentId])
+  @@map("document_purchases")
+}
+
 
 
 

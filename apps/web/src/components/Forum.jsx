@@ -10,6 +10,15 @@ import {
 import { io } from 'socket.io-client';
 import { api, API_BASE } from '../api';
 
+function resolveImageUrl(url) {
+  if (!url) return '';
+  if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:')) {
+    return url;
+  }
+  const cleanUrl = url.startsWith('/') ? url : '/' + url;
+  return `${API_BASE}${cleanUrl}`;
+}
+
 function stripImages(text) {
   if (!text) return '';
   return text.replace(/!\[(.*?)\]\((.*?)\)/g, '').trim();
@@ -19,13 +28,15 @@ function getFirstImageUrl(text) {
   if (!text) return null;
   const regex = /!\[(.*?)\]\((.*?)\)/;
   const match = regex.exec(text);
-  return match ? match[2] : null;
+  return match ? resolveImageUrl(match[2]) : null;
 }
 
 function renderSanitizedContent(content) {
   if (!content) return null;
   let html = content;
-  html = html.replace(/!\[(.*?)\]\((.*?)\)/g, '<img src="$2" alt="$1" style="max-width:100%; max-height:400px; border-radius:8px; border:1px solid var(--border); display:block; margin:10px 0;" />');
+  html = html.replace(/!\[(.*?)\]\((.*?)\)/g, (match, alt, src) => {
+    return `<img src="${resolveImageUrl(src)}" alt="${alt}" class="forum-content-image" />`;
+  });
   html = html.replace(/\n/g, '<br />');
   const sanitized = DOMPurify.sanitize(html);
   return <div dangerouslySetInnerHTML={{ __html: sanitized }} />;
@@ -73,6 +84,14 @@ export default function Forum({ currentUser }) {
 
   // Modals & Inputs
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editingPost, setEditingPost] = useState(null);
+  const [editCategoryId, setEditCategoryId] = useState('');
+  const [editPostType, setEditPostType] = useState('GENERAL');
+  const [editDifficulty, setEditDifficulty] = useState('MEDIUM');
+  const [editTitle, setEditTitle] = useState('');
+  const [editContent, setEditContent] = useState('');
+  const [editTagsString, setEditTagsString] = useState('');
   const [showGroupModal, setShowGroupModal] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportTarget, setReportTarget] = useState({ postId: null, commentId: null });
@@ -98,6 +117,19 @@ export default function Forum({ currentUser }) {
   const [commentText, setCommentText] = useState('');
   const [replyTargetId, setReplyTargetId] = useState(null); // Track which comment we are replying to
   const [submitting, setSubmitting] = useState(false);
+
+  // Advanced Filtering controls
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+  const [filterDifficulty, setFilterDifficulty] = useState('All');
+  const [filterResolved, setFilterResolved] = useState('All');
+  const [filterHasAttachment, setFilterHasAttachment] = useState(false);
+  const [filterDateRange, setFilterDateRange] = useState('All');
+
+  // Image Upload Previews & Drag states
+  const [postImages, setPostImages] = useState([]);
+  const [commentImages, setCommentImages] = useState([]);
+  const [dragOverPost, setDragOverPost] = useState(false);
+  const [dragOverComment, setDragOverComment] = useState(false);
 
   // Socket setup
   const socketRef = useRef(null);
@@ -145,6 +177,11 @@ export default function Forum({ currentUser }) {
       fetchStudyGroups();
     });
 
+    socketRef.current.on('study_group_deleted', () => {
+      console.log('[Socket] Study group deleted, refreshing...');
+      fetchStudyGroups();
+    });
+
     // Fetch initial categories
     fetchCategories();
 
@@ -157,7 +194,7 @@ export default function Forum({ currentUser }) {
 
   // Fetch posts on filters change or tab change
   useEffect(() => {
-    if (activeTab === 'feed') {
+    if (activeTab === 'feed' || activeTab === 'saved') {
       fetchPosts();
     } else if (activeTab === 'groups') {
       fetchStudyGroups();
@@ -165,7 +202,7 @@ export default function Forum({ currentUser }) {
       fetchLeaderboard();
     }
     fetchGamifyProfile();
-  }, [activeTab, selectedCategory, selectedType, selectedTag, sortType]);
+  }, [activeTab, selectedCategory, selectedType, selectedTag, sortType, filterDifficulty, filterResolved, filterHasAttachment, filterDateRange]);
 
   // Monitor room join / leave on post selection
   useEffect(() => {
@@ -223,7 +260,12 @@ export default function Forum({ currentUser }) {
         postType: selectedType === 'All' ? '' : selectedType,
         tag: selectedTag,
         search: searchQuery,
-        sort: sortType === 'newest' ? '' : sortType
+        sort: sortType === 'newest' ? '' : sortType,
+        difficulty: filterDifficulty === 'All' ? '' : filterDifficulty,
+        resolved: filterResolved === 'All' ? '' : filterResolved,
+        hasAttachment: filterHasAttachment ? 'true' : '',
+        dateRange: filterDateRange === 'All' ? '' : filterDateRange,
+        isSaved: activeTab === 'saved' ? 'true' : ''
       };
       const data = await api.getForumPosts(params);
       setPosts(data || []);
@@ -387,9 +429,14 @@ export default function Forum({ currentUser }) {
         .map(t => t.trim())
         .filter(t => t.length > 0);
 
+      let finalContent = newContent.trim();
+      if (postImages.length > 0) {
+        finalContent += '\n\n' + postImages.map(img => `![ảnh](${img})`).join('\n');
+      }
+
       const postPayload = {
         title: newTitle,
-        content: newContent,
+        content: finalContent,
         categoryId: Number(newCategoryId),
         postType: newPostType,
         difficulty: newPostType === 'QA' ? newDifficulty : undefined,
@@ -404,6 +451,7 @@ export default function Forum({ currentUser }) {
       setNewContent('');
       setNewTagsString('');
       setResourceFile(null);
+      setPostImages([]);
       setShowCreateModal(false);
       
       // Reload stream
@@ -417,6 +465,92 @@ export default function Forum({ currentUser }) {
     }
   };
 
+  const handleDeletePost = async (postId) => {
+    if (!window.confirm('Bạn có chắc chắn muốn xóa bài viết này không?')) return;
+    try {
+      await api.deleteForumPost(postId);
+      toast('Xóa bài viết thành công!', 'success');
+      setSelectedPost(null);
+      fetchPosts();
+    } catch (err) {
+      toast(err.message || 'Xóa bài viết thất bại!', 'error');
+    }
+  };
+
+  const handleOpenEditModal = (post) => {
+    setEditingPost(post);
+    setEditCategoryId(post.categoryId);
+    setEditPostType(post.postType);
+    setEditDifficulty(post.difficulty || 'MEDIUM');
+    setEditTitle(post.title);
+    
+    // Parse out markdown images and separate the content
+    const imgRegex = /!\[(.*?)\]\((.*?)\)/g;
+    const urls = [];
+    const cleanContent = post.content.replace(imgRegex, (m, alt, src) => {
+      urls.push(src);
+      return '';
+    }).trim();
+    
+    setEditContent(cleanContent);
+    setPostImages(urls);
+    setEditTagsString(post.tags?.map(t => t.name).join(', ') || '');
+    setShowEditModal(true);
+  };
+
+  const handleEditPost = async (e) => {
+    e.preventDefault();
+    if (!editTitle.trim() || !editContent.trim() || submitting) return;
+    setSubmitting(true);
+    try {
+      const parsedTags = editTagsString
+        .split(',')
+        .map(t => t.trim())
+        .filter(t => t.length > 0);
+
+      let finalContent = editContent.trim();
+      if (postImages.length > 0) {
+        finalContent += '\n\n' + postImages.map(img => `![ảnh](${img})`).join('\n');
+      }
+
+      const postPayload = {
+        title: editTitle,
+        content: finalContent,
+        categoryId: Number(editCategoryId),
+        postType: editPostType,
+        difficulty: editPostType === 'QA' ? editDifficulty : undefined,
+        tags: parsedTags
+      };
+
+      const res = await api.updateForumPost(editingPost.id, postPayload);
+      
+      // Update detailed view state if it is currently open
+      if (selectedPost && selectedPost.id === editingPost.id) {
+        setSelectedPost(res.data);
+      }
+      
+      setShowEditModal(false);
+      fetchPosts();
+      toast('Cập nhật bài viết thành công!', 'success');
+    } catch (err) {
+      toast(err.message || 'Cập nhật bài viết thất bại!', 'error');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleDeleteGroup = async (groupId) => {
+    if (!window.confirm('Bạn có chắc chắn muốn giải tán (xóa) nhóm học tập này? Hành động này không thể hoàn tác.')) return;
+    try {
+      await api.deleteStudyGroup(groupId);
+      setSelectedGroup(null);
+      fetchStudyGroups();
+      toast('Đã xóa nhóm học tập thành công!', 'success');
+    } catch (err) {
+      toast(err.message || 'Xóa nhóm học tập thất bại!', 'error');
+    }
+  };
+
   const [uploadingImage, setUploadingImage] = useState(false);
 
   const handleUploadImageForPost = async (e) => {
@@ -426,8 +560,8 @@ export default function Forum({ currentUser }) {
     try {
       const data = await api.uploadFile(file);
       if (data && data.url) {
-        setNewContent(prev => prev + (prev ? '\n' : '') + `![ảnh](${data.url})`);
-        toast('Tải ảnh lên thành công và đã thêm vào nội dung!', 'success');
+        setPostImages(prev => [...prev, data.url]);
+        toast('Tải ảnh lên thành công!', 'success');
       }
     } catch (err) {
       toast(err.message || 'Tải ảnh lên thất bại!', 'error');
@@ -443,8 +577,8 @@ export default function Forum({ currentUser }) {
     try {
       const data = await api.uploadFile(file);
       if (data && data.url) {
-        setCommentText(prev => prev + (prev ? ' ' : '') + `![ảnh](${data.url})`);
-        toast('Tải ảnh lên thành công và đã thêm vào bình luận!', 'success');
+        setCommentImages(prev => [...prev, data.url]);
+        toast('Tải ảnh lên thành công!', 'success');
       }
     } catch (err) {
       toast(err.message || 'Tải ảnh lên thất bại!', 'error');
@@ -453,7 +587,7 @@ export default function Forum({ currentUser }) {
     }
   };
 
-  const handlePasteImage = async (e, setContent) => {
+  const handlePasteImage = async (e, isPost = true) => {
     const items = e.clipboardData?.items;
     if (!items) return;
     
@@ -467,23 +601,12 @@ export default function Forum({ currentUser }) {
         try {
           const data = await api.uploadFile(file);
           if (data && data.url) {
-            const markdownImage = `![ảnh](${data.url})`;
-            
-            const textarea = e.target;
-            const start = textarea.selectionStart || 0;
-            const end = textarea.selectionEnd || 0;
-            const text = textarea.value || '';
-            const newText = text.substring(0, start) + markdownImage + text.substring(end);
-            
-            setContent(newText);
-            
-            setTimeout(() => {
-              textarea.focus();
-              const newCursorPos = start + markdownImage.length;
-              textarea.setSelectionRange(newCursorPos, newCursorPos);
-            }, 0);
-            
-            toast('Đã dán và tải ảnh lên thành công!', 'success');
+            if (isPost) {
+              setPostImages(prev => [...prev, data.url]);
+            } else {
+              setCommentImages(prev => [...prev, data.url]);
+            }
+            toast('Dán ảnh thành công!', 'success');
           }
         } catch (err) {
           toast(err.message || 'Tải ảnh từ clipboard thất bại!', 'error');
@@ -495,12 +618,46 @@ export default function Forum({ currentUser }) {
     }
   };
 
+  const handleDropImage = async (e, isPost = true) => {
+    e.preventDefault();
+    const files = e.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+    
+    const file = files[0];
+    if (file.type.indexOf('image') === -1) {
+      toast('Chỉ hỗ trợ tải lên tệp hình ảnh!', 'warning');
+      return;
+    }
+    
+    setUploadingImage(true);
+    try {
+      const data = await api.uploadFile(file);
+      if (data && data.url) {
+        if (isPost) {
+          setPostImages(prev => [...prev, data.url]);
+        } else {
+          setCommentImages(prev => [...prev, data.url]);
+        }
+        toast('Tải ảnh lên từ kéo thả thành công!', 'success');
+      }
+    } catch (err) {
+      toast(err.message || 'Tải ảnh lên thất bại!', 'error');
+    } finally {
+      setUploadingImage(false);
+    }
+  };
+
   const handleSendComment = async (e) => {
     e.preventDefault();
     if (!commentText.trim() || submitting) return;
     setSubmitting(true);
     try {
-      const newComment = await api.createForumComment(selectedPost.id, commentText, replyTargetId);
+      let finalComment = commentText.trim();
+      if (commentImages.length > 0) {
+        finalComment += '\n\n' + commentImages.map(img => `![ảnh](${img})`).join('\n');
+      }
+
+      const newComment = await api.createForumComment(selectedPost.id, finalComment, replyTargetId);
 
       if (replyTargetId) {
         setComments(prev => prev.map(c => {
@@ -518,6 +675,7 @@ export default function Forum({ currentUser }) {
       }
 
       setCommentText('');
+      setCommentImages([]);
       setReplyTargetId(null);
       fetchGamifyProfile();
     } catch (err) {
@@ -528,24 +686,29 @@ export default function Forum({ currentUser }) {
   };
 
   const handleLikePost = async (postId) => {
+    await handleReactPost(postId, 'UPVOTE');
+  };
+
+  const handleReactPost = async (postId, type) => {
     if (!currentUser) {
-      toast('Vui lòng đăng nhập để bình chọn!', 'warning');
+      toast('Vui lòng đăng nhập để bày tỏ cảm xúc!', 'warning');
       return;
     }
     try {
-      const result = await api.reactForumPost(postId, 'UPVOTE');
+      const result = await api.reactForumPost(postId, type);
       
-      // Update local UI state
       setPosts(prev => prev.map(p => {
         if (p.id === postId) {
-          const userHasLiked = p.likedBy?.includes(currentUser.id);
-          const nextLikedBy = userHasLiked
-            ? p.likedBy.filter(id => id !== currentUser.id)
-            : [...(p.likedBy || []), currentUser.id];
+          const userReaction = result.userReaction;
+          const likedBy = userReaction 
+            ? (p.likedBy?.includes(currentUser.id) ? p.likedBy : [...(p.likedBy || []), currentUser.id])
+            : p.likedBy?.filter(id => id !== currentUser.id);
           return {
             ...p,
             likes: result.likes,
-            likedBy: nextLikedBy
+            likedBy,
+            reactionCounts: result.reactionCounts,
+            userReaction: result.userReaction
           };
         }
         return p;
@@ -553,19 +716,81 @@ export default function Forum({ currentUser }) {
 
       if (selectedPost && selectedPost.id === postId) {
         setSelectedPost(prev => {
-          const userHasLiked = prev.likedBy?.includes(currentUser.id);
-          const nextLikedBy = userHasLiked
-            ? prev.likedBy.filter(id => id !== currentUser.id)
-            : [...(prev.likedBy || []), currentUser.id];
+          const userReaction = result.userReaction;
+          const likedBy = userReaction 
+            ? (prev.likedBy?.includes(currentUser.id) ? prev.likedBy : [...(prev.likedBy || []), currentUser.id])
+            : prev.likedBy?.filter(id => id !== currentUser.id);
           return {
             ...prev,
             likes: result.likes,
-            likedBy: nextLikedBy
+            likedBy,
+            reactionCounts: result.reactionCounts,
+            userReaction: result.userReaction
           };
         });
       }
     } catch (err) {
-      toast(err.message || 'Thao tác vote thất bại!', 'error');
+      toast(err.message || 'Thao tác bày tỏ cảm xúc thất bại!', 'error');
+    }
+  };
+
+  const handleReactComment = async (commentId, type) => {
+    if (!currentUser) {
+      toast('Vui lòng đăng nhập để bày tỏ cảm xúc!', 'warning');
+      return;
+    }
+    try {
+      const result = await api.reactForumComment(commentId, type);
+      
+      setComments(prev => {
+        const updateReplies = (replies) => {
+          return (replies || []).map(r => {
+            if (r.id === commentId) {
+              return { ...r, reactionCounts: result.reactionCounts, userReaction: result.userReaction };
+            }
+            return { ...r, replies: updateReplies(r.replies) };
+          });
+        };
+
+        return prev.map(c => {
+          if (c.id === commentId) {
+            return { ...c, reactionCounts: result.reactionCounts, userReaction: result.userReaction };
+          }
+          return { ...c, replies: updateReplies(c.replies) };
+        });
+      });
+    } catch (err) {
+      toast(err.message || 'Thao tác bày tỏ cảm xúc thất bại!', 'error');
+    }
+  };
+
+  const handleToggleSavePost = async (e, post) => {
+    e.stopPropagation();
+    if (!currentUser) {
+      toast('Vui lòng đăng nhập để lưu bài viết!', 'warning');
+      return;
+    }
+    try {
+      const res = await api.toggleSaveForumPost(post.id);
+      
+      setPosts(prev => prev.map(p => {
+        if (p.id === post.id) {
+          return { ...p, isSaved: res.isSaved };
+        }
+        return p;
+      }));
+
+      if (selectedPost && selectedPost.id === post.id) {
+        setSelectedPost(prev => ({ ...prev, isSaved: res.isSaved }));
+      }
+      
+      toast(res.message, 'success');
+      
+      if (activeTab === 'saved' && !res.isSaved) {
+        setPosts(prev => prev.filter(p => p.id !== post.id));
+      }
+    } catch (err) {
+      toast(err.message || 'Lỗi lưu bài viết!', 'error');
     }
   };
 
@@ -659,7 +884,7 @@ export default function Forum({ currentUser }) {
         </div>
         
         <div style={{ display: 'flex', gap: '10px' }}>
-          {activeTab === 'feed' && (
+          {(activeTab === 'feed' || activeTab === 'saved') && (
             <button 
               className="btn-primary" 
               onClick={() => setShowCreateModal(true)} 
@@ -669,22 +894,22 @@ export default function Forum({ currentUser }) {
                 gap: '6px',
                 padding: '10px 20px',
                 borderRadius: '10px',
-                border: '2.5px solid #000000',
-                background: 'linear-gradient(135deg, #6c5ce7 0%, #4f46e5 100%)',
+                border: 'none',
+                background: 'linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%)',
                 color: '#FFFFFF',
-                boxShadow: '3px 3px 0px #000000',
+                boxShadow: 'var(--shadow-sm)',
                 cursor: 'pointer',
-                fontWeight: '900',
+                fontWeight: '600',
                 fontSize: '13.5px',
-                transition: 'all 0.15s'
+                transition: 'all 0.2s ease'
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.transform = 'translate(-1px, -1px)';
-                e.currentTarget.style.boxShadow = '4px 4px 0px #000000';
+                e.currentTarget.style.transform = 'translateY(-2px)';
+                e.currentTarget.style.boxShadow = 'var(--shadow-md)';
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.transform = 'none';
-                e.currentTarget.style.boxShadow = '3px 3px 0px #000000';
+                e.currentTarget.style.boxShadow = 'var(--shadow-sm)';
               }}
             >
               <HiPlus /> Đăng câu hỏi mới
@@ -701,22 +926,22 @@ export default function Forum({ currentUser }) {
                 gap: '6px',
                 padding: '10px 20px',
                 borderRadius: '10px',
-                border: '2.5px solid #000000',
-                background: 'linear-gradient(135deg, #6c5ce7 0%, #4f46e5 100%)',
+                border: 'none',
+                background: 'linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%)',
                 color: '#FFFFFF',
-                boxShadow: '3px 3px 0px #000000',
+                boxShadow: 'var(--shadow-sm)',
                 cursor: 'pointer',
-                fontWeight: '900',
+                fontWeight: '600',
                 fontSize: '13.5px',
-                transition: 'all 0.15s'
+                transition: 'all 0.2s ease'
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.transform = 'translate(-1px, -1px)';
-                e.currentTarget.style.boxShadow = '4px 4px 0px #000000';
+                e.currentTarget.style.transform = 'translateY(-2px)';
+                e.currentTarget.style.boxShadow = 'var(--shadow-md)';
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.transform = 'none';
-                e.currentTarget.style.boxShadow = '3px 3px 0px #000000';
+                e.currentTarget.style.boxShadow = 'var(--shadow-sm)';
               }}
             >
               <HiPlus /> Tạo nhóm học tập
@@ -733,7 +958,8 @@ export default function Forum({ currentUser }) {
           <div style={{ display: 'flex', marginBottom: '24px', gap: '12px' }}>
             {[
               { id: 'feed', label: 'Bài thảo luận', icon: <HiChat /> },
-              { id: 'groups', label: 'Nhóm học tập', icon: <HiUserGroup /> }
+              { id: 'groups', label: 'Nhóm học tập', icon: <HiUserGroup /> },
+              { id: 'saved', label: 'Bài viết đã lưu', icon: <HiStar /> }
             ].map(tab => (
               <button
                 key={tab.id}
@@ -748,25 +974,29 @@ export default function Forum({ currentUser }) {
                   gap: '8px',
                   padding: '10px 20px',
                   borderRadius: '10px',
-                  border: '2.5px solid #000000',
-                  background: activeTab === tab.id ? '#6c5ce7' : '#FFFFFF',
-                  color: activeTab === tab.id ? '#FFFFFF' : '#1E293B',
-                  boxShadow: activeTab === tab.id ? '3px 3px 0px #000000' : '2px 2px 0px #000000',
+                  border: activeTab === tab.id ? '1px solid var(--primary)' : '1px solid var(--border)',
+                  background: activeTab === tab.id ? 'var(--primary)' : 'var(--bg-card)',
+                  color: activeTab === tab.id ? '#FFFFFF' : 'var(--text-secondary)',
+                  boxShadow: activeTab === tab.id ? 'var(--shadow-md)' : 'var(--shadow-sm)',
                   cursor: 'pointer',
-                  fontWeight: '900',
+                  fontWeight: '600',
                   fontSize: '13.5px',
-                  transition: 'all 0.15s'
+                  transition: 'all 0.2s ease'
                 }}
                 onMouseEnter={(e) => {
                   if (activeTab !== tab.id) {
-                    e.currentTarget.style.transform = 'translate(-1px, -1px)';
-                    e.currentTarget.style.boxShadow = '3px 3px 0px #000000';
+                    e.currentTarget.style.transform = 'translateY(-1px)';
+                    e.currentTarget.style.boxShadow = 'var(--shadow-md)';
+                    e.currentTarget.style.borderColor = 'var(--primary-light)';
+                    e.currentTarget.style.color = 'var(--primary)';
                   }
                 }}
                 onMouseLeave={(e) => {
                   if (activeTab !== tab.id) {
                     e.currentTarget.style.transform = 'none';
-                    e.currentTarget.style.boxShadow = '2px 2px 0px #000000';
+                    e.currentTarget.style.boxShadow = 'var(--shadow-sm)';
+                    e.currentTarget.style.borderColor = 'var(--border)';
+                    e.currentTarget.style.color = 'var(--text-secondary)';
                   }
                 }}
               >
@@ -798,7 +1028,47 @@ export default function Forum({ currentUser }) {
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', gap: '8px' }}>
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                  {(currentUser?.role === 'ADMIN' || currentUser?.role === 'TEACHER' || selectedPost.authorId === currentUser?.id) && (
+                    <>
+                      <button 
+                        onClick={() => handleOpenEditModal(selectedPost)}
+                        style={{
+                          background: 'none',
+                          border: '1px solid var(--border)',
+                          borderRadius: '6px',
+                          padding: '4px 10px',
+                          fontSize: '12px',
+                          fontWeight: '600',
+                          color: 'var(--primary)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px'
+                        }}
+                      >
+                        Sửa
+                      </button>
+                      <button 
+                        onClick={() => handleDeletePost(selectedPost.id)}
+                        style={{
+                          background: 'none',
+                          border: '1px solid rgba(231, 76, 60, 0.2)',
+                          borderRadius: '6px',
+                          padding: '4px 10px',
+                          fontSize: '12px',
+                          fontWeight: '600',
+                          color: 'var(--accent-red)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px'
+                        }}
+                      >
+                        Xóa
+                      </button>
+                    </>
+                  )}
                   <button 
                     onClick={() => {
                       setReportTarget({ postId: selectedPost.id, commentId: null });
@@ -837,20 +1107,63 @@ export default function Forum({ currentUser }) {
               )}
 
               {/* Action Buttons Row */}
-              <div style={{ display: 'flex', gap: '20px', borderTop: '1px solid var(--border)', paddingTop: '16px', marginBottom: '24px' }}>
-                <button 
-                  onClick={() => handleLikePost(selectedPost.id)}
+              <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)', paddingTop: '16px', marginBottom: '24px', flexWrap: 'wrap', gap: '12px' }}>
+                <div style={{ display: 'flex', gap: '20px', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                    {[
+                      { type: 'LIKE', emoji: '👍', label: 'Thích' },
+                      { type: 'LOVE', emoji: '❤️', label: 'Yêu thích' },
+                      { type: 'LAUGH', emoji: '😄', label: 'Cười' },
+                      { type: 'CLAP', emoji: '👏', label: 'Vỗ tay' }
+                    ].map(reaction => {
+                      const count = selectedPost.reactionCounts?.[reaction.type] || 0;
+                      const isUserReacted = selectedPost.userReaction === reaction.type;
+                      return (
+                        <button
+                          key={reaction.type}
+                          onClick={() => handleReactPost(selectedPost.id, reaction.type)}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            background: isUserReacted ? 'var(--primary-bg)' : 'transparent',
+                            border: isUserReacted ? '1px solid var(--primary)' : '1px solid transparent',
+                            borderRadius: '20px',
+                            padding: '6px 12px',
+                            fontSize: '12px',
+                            cursor: 'pointer',
+                            color: isUserReacted ? 'var(--primary)' : 'var(--text-secondary)',
+                            transition: 'all 0.15s ease'
+                          }}
+                          title={reaction.label}
+                        >
+                          <span>{reaction.emoji}</span>
+                          {count > 0 && <span style={{ fontWeight: 'bold' }}>{count}</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-secondary)', fontSize: '13px' }}>
+                    <HiChat style={{ fontSize: '18px' }} /> {comments.length} Phản hồi
+                  </span>
+                </div>
+                
+                <button
+                  onClick={(e) => handleToggleSavePost(e, selectedPost)}
                   style={{
-                    display: 'flex', alignItems: 'center', gap: '6px', border: 'none', background: 'none',
-                    color: selectedPost.likedBy?.includes(currentUser?.id) ? 'var(--accent-red)' : 'var(--text-secondary)',
-                    cursor: 'pointer', fontWeight: 'bold'
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    border: 'none',
+                    background: 'none',
+                    color: selectedPost.isSaved ? '#f1c40f' : 'var(--text-secondary)',
+                    cursor: 'pointer',
+                    fontWeight: 'bold',
+                    fontSize: '13px'
                   }}
                 >
-                  <HiHeart style={{ fontSize: '18px' }} /> {selectedPost.likes || 0} Hữu ích
+                  <HiStar style={{ fontSize: '18px' }} /> {selectedPost.isSaved ? 'Đã lưu' : 'Lưu lại'}
                 </button>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-secondary)' }}>
-                  <HiChat style={{ fontSize: '18px' }} /> {comments.length} Phản hồi
-                </span>
               </div>
 
               {/* Comments Section */}
@@ -914,6 +1227,41 @@ export default function Forum({ currentUser }) {
                           {renderSanitizedContent(c.content)}
                         </div>
 
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', paddingLeft: '36px', marginTop: '6px', marginBottom: '8px', flexWrap: 'wrap' }}>
+                          {[
+                            { type: 'LIKE', emoji: '👍', label: 'Thích' },
+                            { type: 'LOVE', emoji: '❤️', label: 'Yêu thích' },
+                            { type: 'LAUGH', emoji: '😄', label: 'Cười' },
+                            { type: 'CLAP', emoji: '👏', label: 'Vỗ tay' }
+                          ].map(reaction => {
+                            const count = c.reactionCounts?.[reaction.type] || 0;
+                            const isUserReacted = c.userReaction === reaction.type;
+                            return (
+                              <button
+                                key={reaction.type}
+                                onClick={() => handleReactComment(c.id, reaction.type)}
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                  background: isUserReacted ? 'var(--primary-bg)' : 'transparent',
+                                  border: isUserReacted ? '1px solid var(--primary)' : '1px solid transparent',
+                                  borderRadius: '20px',
+                                  padding: '2px 8px',
+                                  fontSize: '11px',
+                                  cursor: 'pointer',
+                                  color: isUserReacted ? 'var(--primary)' : 'var(--text-secondary)',
+                                  transition: 'all 0.15s ease'
+                                }}
+                                title={reaction.label}
+                              >
+                                <span>{reaction.emoji}</span>
+                                {count > 0 && <span style={{ fontWeight: 'bold' }}>{count}</span>}
+                              </button>
+                            );
+                          })}
+                        </div>
+
                         {/* Nesting replies handler */}
                         <div style={{ paddingLeft: '36px', marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                           {c.replies && c.replies.map(reply => (
@@ -944,37 +1292,73 @@ export default function Forum({ currentUser }) {
                 </div>
 
                 {/* Reply form */}
-                <form onSubmit={handleSendComment} style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                  <input
-                    type="text"
-                    className="form-control"
-                    placeholder={replyTargetId ? "Viết phản hồi của bạn... (Hỗ trợ Ctrl+V để dán ảnh)" : "Giải pháp hoặc ý kiến thảo luận của bạn... (Hỗ trợ Ctrl+V để dán ảnh)"}
-                    value={commentText}
-                    onChange={e => setCommentText(e.target.value)}
-                    onPaste={(e) => handlePasteImage(e, setCommentText)}
-                    style={{ flex: 1 }}
-                    required
-                  />
-                  <label className="btn-outline" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', padding: '8px 12px', fontSize: '14px', margin: 0, height: '38px', boxSizing: 'border-box' }} title="Tải ảnh lên">
-                    {uploadingImage ? '⏳' : '📷'}
-                    <input 
-                      type="file" 
-                      accept="image/*" 
-                      onChange={handleUploadImageForComment} 
-                      disabled={uploadingImage || submitting} 
-                      style={{ display: 'none' }} 
+                <form onSubmit={handleSendComment} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+                    <textarea
+                      className="form-control"
+                      placeholder={replyTargetId ? "Viết phản hồi của bạn... (Kéo thả ảnh hoặc dán Ctrl+V trực tiếp vào đây)" : "Giải pháp hoặc ý kiến thảo luận của bạn... (Kéo thả ảnh hoặc dán Ctrl+V trực tiếp vào đây)"}
+                      value={commentText}
+                      onChange={e => setCommentText(e.target.value)}
+                      onPaste={(e) => handlePasteImage(e, false)}
+                      onDragOver={(e) => { e.preventDefault(); setDragOverComment(true); }}
+                      onDragLeave={() => setDragOverComment(false)}
+                      onDrop={(e) => { setDragOverComment(false); handleDropImage(e, false); }}
+                      style={{
+                        flex: 1,
+                        minHeight: '80px',
+                        resize: 'vertical',
+                        border: dragOverComment ? '2px dashed #6c5ce7' : '2.5px solid #000000',
+                        background: dragOverComment ? '#f3f0ff' : '#FFFFFF',
+                        transition: 'all 0.15s ease'
+                      }}
+                      required
                     />
-                  </label>
-                  <button type="submit" className="btn-primary" style={{ padding: '8px 16px', height: '38px' }} disabled={submitting}>
-                    {submitting ? 'Gửi...' : 'Gửi'}
-                  </button>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      <label className="btn-outline" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', padding: '8px 12px', fontSize: '14px', margin: 0, height: '38px', boxSizing: 'border-box' }} title="Tải ảnh lên">
+                        {uploadingImage ? '⏳' : '📷'}
+                        <input 
+                          type="file" 
+                          accept="image/*" 
+                          onChange={handleUploadImageForComment} 
+                          disabled={uploadingImage || submitting} 
+                          style={{ display: 'none' }} 
+                        />
+                      </label>
+                      <button type="submit" className="btn-primary" style={{ padding: '8px 16px', height: '38px' }} disabled={submitting}>
+                        {submitting ? 'Gửi...' : 'Gửi'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {commentImages.length > 0 && (
+                    <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '4px' }}>
+                      {commentImages.map((url, idx) => (
+                        <div key={idx} style={{ position: 'relative', width: '60px', height: '60px', border: '2px solid #000000', borderRadius: '8px', overflow: 'hidden' }}>
+                          <img src={url} alt="Comment Uploaded preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          <button
+                            type="button"
+                            onClick={() => setCommentImages(prev => prev.filter((_, i) => i !== idx))}
+                            style={{
+                              position: 'absolute', top: '2px', right: '2px',
+                              background: '#ff7675', color: '#fff', border: '1px solid #000',
+                              borderRadius: '50%', width: '16px', height: '16px',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              cursor: 'pointer', fontSize: '8px', fontWeight: 'bold'
+                            }}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </form>
               </div>
             </div>
           ) : (
             /* LISTINGS OR TABS */
             <div>
-              {activeTab === 'feed' && (
+              {(activeTab === 'feed' || activeTab === 'saved') && (
                 <div>
                   {/* Filters Bar */}
                   <div className="card" style={{
@@ -984,10 +1368,10 @@ export default function Forum({ currentUser }) {
                     gap: '12px',
                     flexWrap: 'wrap',
                     alignItems: 'center',
-                    background: '#FFFFFF',
-                    border: '2.5px solid #000000',
-                    borderRadius: '16px',
-                    boxShadow: '4px 4px 0px #000000'
+                    background: 'var(--bg-card)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 'var(--radius-lg)',
+                    boxShadow: 'var(--shadow-sm)'
                   }}>
                     <div style={{ position: 'relative', flex: 1, minWidth: '200px' }}>
                       <HiSearch style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#64748B', fontSize: '16px' }} />
@@ -1000,7 +1384,7 @@ export default function Forum({ currentUser }) {
                         style={{
                           paddingLeft: '36px',
                           width: '100%',
-                          border: '2px solid #000000',
+                          border: '1px solid var(--border)',
                           paddingTop: '10px',
                           paddingBottom: '10px',
                           paddingRight: '14px',
@@ -1008,7 +1392,7 @@ export default function Forum({ currentUser }) {
                           fontSize: '13px',
                           background: '#F8FAFC',
                           color: '#1E293B',
-                          fontWeight: 'bold',
+                          fontWeight: '500',
                           outline: 'none'
                         }}
                       />
@@ -1020,11 +1404,11 @@ export default function Forum({ currentUser }) {
                       onChange={e => setSelectedCategory(e.target.value)}
                       style={{
                         minWidth: '150px',
-                        border: '2px solid #000000',
+                        border: '1px solid var(--border)',
                         padding: '10px',
                         borderRadius: '8px',
                         fontSize: '13px',
-                        fontWeight: 'bold',
+                        fontWeight: '500',
                         background: '#F8FAFC',
                         color: '#1E293B',
                         cursor: 'pointer',
@@ -1043,11 +1427,11 @@ export default function Forum({ currentUser }) {
                       onChange={e => setSelectedType(e.target.value)}
                       style={{
                         minWidth: '150px',
-                        border: '2px solid #000000',
+                        border: '1px solid var(--border)',
                         padding: '10px',
                         borderRadius: '8px',
                         fontSize: '13px',
-                        fontWeight: 'bold',
+                        fontWeight: '500',
                         background: '#F8FAFC',
                         color: '#1E293B',
                         cursor: 'pointer',
@@ -1066,11 +1450,11 @@ export default function Forum({ currentUser }) {
                       onChange={e => setSortType(e.target.value)}
                       style={{
                         minWidth: '150px',
-                        border: '2px solid #000000',
+                        border: '1px solid var(--border)',
                         padding: '10px',
                         borderRadius: '8px',
                         fontSize: '13px',
-                        fontWeight: 'bold',
+                        fontWeight: '500',
                         background: '#F8FAFC',
                         color: '#1E293B',
                         cursor: 'pointer',
@@ -1082,7 +1466,29 @@ export default function Forum({ currentUser }) {
                       <option value="pinned">Đã ghim lên đầu</option>
                     </select>
 
-                    {(searchQuery || selectedCategory !== 'All' || selectedType !== 'All' || selectedTag) && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
+                      style={{
+                        padding: '10px 18px',
+                        border: '2px solid #000000',
+                        background: showAdvancedFilters ? '#6c5ce7' : '#FFFFFF',
+                        color: showAdvancedFilters ? '#FFFFFF' : '#1E293B',
+                        fontWeight: 'bold',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        fontSize: '13px',
+                        transition: 'all 0.15s',
+                        boxShadow: '2px 2px 0px #000000',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}
+                    >
+                      Lọc nâng cao {showAdvancedFilters ? '▲' : '▼'}
+                    </button>
+
+                    {(searchQuery || selectedCategory !== 'All' || selectedType !== 'All' || selectedTag || filterDifficulty !== 'All' || filterResolved !== 'All' || filterHasAttachment || filterDateRange !== 'All') && (
                       <button 
                         className="btn-outline" 
                         onClick={() => {
@@ -1091,26 +1497,99 @@ export default function Forum({ currentUser }) {
                           setSelectedType('All');
                           setSelectedTag('');
                           setSortType('newest');
+                          setFilterDifficulty('All');
+                          setFilterResolved('All');
+                          setFilterHasAttachment(false);
+                          setFilterDateRange('All');
                         }}
                         style={{
                           padding: '10px 18px',
-                          border: '2px solid #000000',
+                          border: '1px solid var(--border)',
                           background: '#FFFFFF',
                           color: '#1E293B',
-                          fontWeight: 'bold',
+                          fontWeight: '600',
                           borderRadius: '8px',
                           cursor: 'pointer',
                           fontSize: '13px',
                           transition: 'all 0.15s',
-                          boxShadow: '2px 2px 0px #000000'
+                          boxShadow: 'var(--shadow-sm)'
                         }}
-                        onMouseEnter={(e) => { e.currentTarget.style.transform = 'translate(-1px, -1px)'; e.currentTarget.style.boxShadow = '3px 3px 0px #000000'; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = '2px 2px 0px #000000'; }}
+                        onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = 'var(--shadow-md)'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'var(--shadow-sm)'; }}
                       >
                         Đặt lại
                       </button>
                     )}
                   </div>
+
+                  {showAdvancedFilters && (
+                    <div className="card animate-in" style={{
+                      padding: '20px',
+                      marginBottom: '24px',
+                      background: '#F8FAFC',
+                      border: '2.5px solid #000000',
+                      borderRadius: '16px',
+                      boxShadow: '4px 4px 0px #000000',
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                      gap: '20px'
+                    }}>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12.5px', fontWeight: '900', color: '#1E293B', marginBottom: '8px' }}>⚙️ Độ khó (Q&A):</label>
+                        <select
+                          className="form-control"
+                          value={filterDifficulty}
+                          onChange={e => setFilterDifficulty(e.target.value)}
+                          style={{ width: '100%', border: '2px solid #000000', borderRadius: '8px', padding: '10px', fontSize: '13px', fontWeight: 'bold', background: '#FFFFFF', outline: 'none' }}
+                        >
+                          <option value="All">Tất cả độ khó</option>
+                          <option value="EASY">Dễ</option>
+                          <option value="MEDIUM">Trung bình</option>
+                          <option value="HARD">Khó</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12.5px', fontWeight: '900', color: '#1E293B', marginBottom: '8px' }}>✓ Lời giải:</label>
+                        <select
+                          className="form-control"
+                          value={filterResolved}
+                          onChange={e => setFilterResolved(e.target.value)}
+                          style={{ width: '100%', border: '2px solid #000000', borderRadius: '8px', padding: '10px', fontSize: '13px', fontWeight: 'bold', background: '#FFFFFF', outline: 'none' }}
+                        >
+                          <option value="All">Tất cả trạng thái</option>
+                          <option value="true">Đã duyệt lời giải hay</option>
+                          <option value="false">Chưa giải quyết</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12.5px', fontWeight: '900', color: '#1E293B', marginBottom: '8px' }}>📅 Thời gian đăng:</label>
+                        <select
+                          className="form-control"
+                          value={filterDateRange}
+                          onChange={e => setFilterDateRange(e.target.value)}
+                          style={{ width: '100%', border: '2px solid #000000', borderRadius: '8px', padding: '10px', fontSize: '13px', fontWeight: 'bold', background: '#FFFFFF', outline: 'none' }}
+                        >
+                          <option value="All">Mọi thời gian</option>
+                          <option value="24h">Trong 24 giờ qua</option>
+                          <option value="7d">Trong 7 ngày qua</option>
+                          <option value="30d">Trong 30 ngày qua</option>
+                        </select>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingTop: '24px' }}>
+                        <input
+                          type="checkbox"
+                          id="filterHasAttachment"
+                          checked={filterHasAttachment}
+                          onChange={e => setFilterHasAttachment(e.target.checked)}
+                          style={{ cursor: 'pointer', width: '20px', height: '20px', accentColor: '#6c5ce7', border: '2px solid #000000' }}
+                        />
+                        <label htmlFor="filterHasAttachment" style={{ fontSize: '13px', fontWeight: '900', color: '#1E293B', cursor: 'pointer', userSelect: 'none' }}>📎 Có đính kèm tài liệu</label>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Popular Tags List */}
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '20px', alignItems: 'center' }}>
@@ -1137,60 +1616,138 @@ export default function Forum({ currentUser }) {
                             key={post.id} 
                             className={`forum-post-card ${post.isPinned ? 'pinned' : ''}`} 
                             onClick={() => setSelectedPost(post)}
+                            style={{
+                              display: 'flex',
+                              gap: '16px',
+                              padding: '20px',
+                              background: 'var(--bg-card)',
+                              border: '1px solid var(--border)',
+                              borderRadius: 'var(--radius-lg)',
+                              cursor: 'pointer',
+                              transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)'
+                            }}
                           >
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2px' }}>
-                              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                                <span className="badge-pill" style={{ background: 'var(--primary-bg)', color: 'var(--primary)', fontSize: '11px', fontWeight: 'bold' }}>
-                                  {post.category?.name}
-                                </span>
-                                {post.postType === 'QA' && (
-                                  <span className="badge-pill" style={{ background: 'rgba(255, 168, 0, 0.15)', color: 'rgb(255, 168, 0)', fontSize: '11px', fontWeight: 'bold' }}>
-                                    Q&A ({post.difficulty})
-                                  </span>
-                                )}
-                                {post.postType === 'RESOURCE' && (
-                                  <span className="badge-pill" style={{ background: 'rgba(0, 184, 148, 0.15)', color: 'var(--accent-green)', fontSize: '11px', fontWeight: 'bold' }}>
-                                    Học liệu
-                                  </span>
-                                )}
-                                {post.isPinned && (
-                                  <span className="badge-pill" style={{ background: 'var(--primary)', color: '#fff', fontSize: '10px' }}>Ghim</span>
-                                )}
+                            {/* Left Column: Avatar + Thread Connector Line */}
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
+                              <div style={{
+                                width: '42px',
+                                height: '42px',
+                                borderRadius: '50%',
+                                background: 'var(--primary-bg)',
+                                color: 'var(--primary)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                fontWeight: '900',
+                                fontSize: '15px',
+                                border: '1.5px solid var(--primary-light)',
+                                boxShadow: 'var(--shadow-sm)'
+                              }}>
+                                {post.author?.fullName?.substring(0, 2).toUpperCase() || 'HS'}
                               </div>
-                              <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                                {new Date(post.createdAt).toLocaleDateString()}
-                              </span>
+                              <div style={{ width: '2px', flexGrow: 1, background: 'var(--border)', marginTop: '8px', minHeight: '30px' }} />
                             </div>
 
-                            <h3 style={{ fontSize: '16.5px', fontWeight: 'bold', margin: '0 0 2px 0', color: 'var(--text-main)' }}>{post.title}</h3>
-                            
-                            {getFirstImageUrl(post.content) && (
-                              <div className="forum-post-preview-image">
-                                <img 
-                                  src={getFirstImageUrl(post.content)} 
-                                  alt="Preview" 
-                                  loading="lazy"
-                                />
+                            {/* Right Column: Main Content */}
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              {/* Header info */}
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                                  <span style={{ fontSize: '14px', fontWeight: '800', color: 'var(--text-primary)' }}>
+                                    {post.author?.fullName}
+                                  </span>
+                                  <span style={{ color: 'var(--text-muted)', fontSize: '11px' }}>•</span>
+                                  <span className="badge-pill" style={{ background: 'var(--primary-bg)', color: 'var(--primary)', fontSize: '10.5px', fontWeight: '800', padding: '3px 8px' }}>
+                                    {post.category?.name}
+                                  </span>
+                                  {post.postType === 'QA' && (
+                                    <span className="badge-pill" style={{ background: 'rgba(255, 168, 0, 0.12)', color: 'rgb(255, 168, 0)', fontSize: '10.5px', fontWeight: '800', padding: '3px 8px' }}>
+                                      Q&A ({post.difficulty})
+                                    </span>
+                                  )}
+                                  {post.postType === 'RESOURCE' && (
+                                    <span className="badge-pill" style={{ background: 'rgba(0, 184, 148, 0.12)', color: 'var(--accent-green)', fontSize: '10.5px', fontWeight: '800', padding: '3px 8px' }}>
+                                      Học liệu
+                                    </span>
+                                  )}
+                                  {post.isPinned && (
+                                    <span className="badge-pill" style={{ background: 'var(--primary)', color: '#fff', fontSize: '9px', padding: '2px 6px' }}>Ghim</span>
+                                  )}
+                                </div>
+                                <span style={{ fontSize: '11px', color: 'var(--text-muted)', flexShrink: 0 }}>
+                                  {new Date(post.createdAt).toLocaleDateString()}
+                                </span>
                               </div>
-                            )}
 
-                            {stripImages(post.content) && (
-                              <p style={{ fontSize: '13px', color: 'var(--text-secondary)', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', margin: '0 0 4px 0', lineHeight: 1.5 }}>
-                                {stripImages(post.content)}
-                              </p>
-                            )}
+                              {/* Title */}
+                              <h3 style={{ fontSize: '16.5px', fontWeight: '800', margin: '4px 0 6px 0', color: 'var(--text-primary)', lineHeight: '1.4' }}>
+                                {post.title}
+                              </h3>
 
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border)', paddingTop: '10px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                              <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                <HiUser /> {post.author?.fullName}
-                              </span>
-                              <div style={{ display: 'flex', gap: '14px' }}>
-                                <span style={{ display: 'flex', alignItems: 'center', gap: '4px', color: post.likedBy?.includes(currentUser?.id) ? 'var(--accent-red)' : 'var(--text-secondary)' }}>
-                                  <HiHeart /> {post.likes || 0}
-                                </span>
-                                <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                  <HiChat /> {post.comments?.length || 0}
-                                </span>
+                              {/* Description text */}
+                              {stripImages(post.content) && (
+                                <p style={{
+                                  fontSize: '13.5px',
+                                  color: 'var(--text-secondary)',
+                                  display: '-webkit-box',
+                                  WebkitLineClamp: 2,
+                                  WebkitBoxOrient: 'vertical',
+                                  overflow: 'hidden',
+                                  margin: '0 0 10px 0',
+                                  lineHeight: 1.5,
+                                  wordBreak: 'break-word'
+                                }}>
+                                  {stripImages(post.content)}
+                                </p>
+                              )}
+
+                              {/* Image attached preview */}
+                              {getFirstImageUrl(post.content) && (
+                                <div className="forum-post-preview-image" style={{ borderRadius: '12px', border: '1.5px solid var(--border)', overflow: 'hidden', maxWidth: '100%', maxHeight: '250px', marginBottom: '12px' }}>
+                                  <img 
+                                    src={resolveImageUrl(getFirstImageUrl(post.content))} 
+                                    alt="Preview" 
+                                    loading="lazy"
+                                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                  />
+                                </div>
+                              )}
+
+                              {/* Footer Actions (Threads-style Action Bar) */}
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border)', paddingTop: '10px', marginTop: '4px' }}>
+                                <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+                                  {/* Likes display */}
+                                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                                    <HiHeart style={{ color: 'var(--accent-red)', fontSize: '16px' }} />
+                                    <span>
+                                      {Object.values(post.reactionCounts || {}).reduce((a, b) => a + b, 0) || 0}
+                                    </span>
+                                  </div>
+
+                                  {/* Comments count */}
+                                  <div style={{ display: 'flex', gap: '4px', alignItems: 'center', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                                    <HiChat style={{ fontSize: '16px', color: 'var(--primary)' }} />
+                                    <span>{post.comments?.length || 0}</span>
+                                  </div>
+                                </div>
+
+                                <button
+                                  onClick={(e) => handleToggleSavePost(e, post)}
+                                  style={{
+                                    border: 'none',
+                                    background: 'none',
+                                    padding: 4,
+                                    cursor: 'pointer',
+                                    color: post.isSaved ? '#f1c40f' : 'var(--text-muted)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    transition: 'transform 0.1s'
+                                  }}
+                                  title={post.isSaved ? "Bỏ lưu bài viết" : "Lưu bài viết"}
+                                >
+                                  <HiStar style={{ fontSize: '18px' }} />
+                                </button>
                               </div>
                             </div>
                           </div>
@@ -1220,13 +1777,24 @@ export default function Forum({ currentUser }) {
                       </div>
                     </div>
                     
-                    <button 
-                      className="btn-outline" 
-                      onClick={() => handleLeaveGroup(selectedGroup.id)}
-                      style={{ color: 'var(--accent-red)', borderColor: 'var(--accent-red)', background: 'none', padding: '6px 14px' }}
-                    >
-                      Rời nhóm
-                    </button>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      {(currentUser?.role === 'ADMIN' || selectedGroup.creatorId === currentUser?.id) && (
+                        <button 
+                          className="btn-outline" 
+                          onClick={() => handleDeleteGroup(selectedGroup.id)}
+                          style={{ color: 'var(--accent-red)', borderColor: 'var(--accent-red)', background: 'none', padding: '6px 14px' }}
+                        >
+                          Xóa nhóm
+                        </button>
+                      )}
+                      <button 
+                        className="btn-outline" 
+                        onClick={() => handleLeaveGroup(selectedGroup.id)}
+                        style={{ color: 'var(--text-secondary)', borderColor: 'var(--border)', background: 'none', padding: '6px 14px' }}
+                      >
+                        Rời nhóm
+                      </button>
+                    </div>
                   </div>
 
                   {/* Tabs menu */}
@@ -1504,30 +2072,32 @@ export default function Forum({ currentUser }) {
                           className="card" 
                           style={{
                             padding: '22px',
-                            background: '#FFFFFF',
-                            border: '2.5px solid #000000',
-                            borderRadius: '16px',
-                            boxShadow: '4px 4px 0px #000000',
+                            background: 'var(--bg-card)',
+                            border: '1px solid var(--border)',
+                            borderRadius: 'var(--radius-lg)',
+                            boxShadow: 'var(--shadow-sm)',
                             transition: 'all 0.2s ease',
                             display: 'flex',
                             flexDirection: 'column',
                             justifyContent: 'space-between'
                           }}
                           onMouseEnter={(e) => {
-                            e.currentTarget.style.transform = 'translate(-2px, -2px)';
-                            e.currentTarget.style.boxShadow = '6px 6px 0px #000000';
+                            e.currentTarget.style.transform = 'translateY(-2px)';
+                            e.currentTarget.style.boxShadow = 'var(--shadow-md)';
+                            e.currentTarget.style.borderColor = 'var(--primary-light)';
                           }}
                           onMouseLeave={(e) => {
                             e.currentTarget.style.transform = 'none';
-                            e.currentTarget.style.boxShadow = '4px 4px 0px #000000';
+                            e.currentTarget.style.boxShadow = 'var(--shadow-sm)';
+                            e.currentTarget.style.borderColor = 'var(--border)';
                           }}
                         >
                           <div>
-                            <h4 style={{ fontSize: '16px', fontWeight: '900', color: '#1E293B', marginBottom: '8px' }}>👥 {group.name}</h4>
-                            <p style={{ fontSize: '13px', color: '#475569', fontWeight: '500', minHeight: '40px', marginBottom: '16px', lineHeight: '1.4' }}>{group.description}</p>
+                            <h4 style={{ fontSize: '16px', fontWeight: 'bold', color: 'var(--text-main)', marginBottom: '8px' }}>👥 {group.name}</h4>
+                            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: '500', minHeight: '40px', marginBottom: '16px', lineHeight: '1.4' }}>{group.description}</p>
                           </div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px', borderTop: '2px solid #F1F5F9', paddingTop: '12px' }}>
-                            <span style={{ fontWeight: '800', color: '#64748B' }}>Thành viên: {group.memberCount}</span>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px', borderTop: '1px solid var(--border)', paddingTop: '12px' }}>
+                            <span style={{ fontWeight: '600', color: 'var(--text-muted)' }}>Thành viên: {group.memberCount}</span>
                             {group.isMember ? (
                               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                                 <span style={{ color: '#00b894', fontWeight: '900', fontSize: '14px' }}>✓</span>
@@ -1535,15 +2105,16 @@ export default function Forum({ currentUser }) {
                                   className="btn-primary" 
                                   onClick={() => setSelectedGroup(group)} 
                                   style={{
-                                    padding: '6px 12px',
-                                    fontSize: '11px',
-                                    fontWeight: '800',
-                                    background: '#6c5ce7',
+                                    padding: '6px 14px',
+                                    fontSize: '11.5px',
+                                    fontWeight: '600',
+                                    background: 'var(--primary)',
                                     color: '#FFFFFF',
-                                    border: '2px solid #000000',
-                                    boxShadow: '2px 2px 0px #000000',
+                                    border: 'none',
                                     borderRadius: '6px',
-                                    cursor: 'pointer'
+                                    cursor: 'pointer',
+                                    boxShadow: '0 2px 4px rgba(108, 92, 231, 0.15)',
+                                    transition: 'all 0.2s'
                                   }}
                                 >
                                   Vào nhóm
@@ -1554,15 +2125,16 @@ export default function Forum({ currentUser }) {
                                 className="btn-primary" 
                                 onClick={() => handleJoinStudyGroup(group.id)} 
                                 style={{
-                                  padding: '6px 12px',
-                                  fontSize: '11px',
-                                  fontWeight: '800',
-                                  background: '#6c5ce7',
+                                  padding: '6px 14px',
+                                  fontSize: '11.5px',
+                                  fontWeight: '600',
+                                  background: 'var(--primary)',
                                   color: '#FFFFFF',
-                                  border: '2px solid #000000',
-                                  boxShadow: '2px 2px 0px #000000',
+                                  border: 'none',
                                   borderRadius: '6px',
-                                  cursor: 'pointer'
+                                  cursor: 'pointer',
+                                  boxShadow: '0 2px 4px rgba(108, 92, 231, 0.15)',
+                                  transition: 'all 0.2s'
                                 }}
                               >
                                 Tham gia
@@ -1585,10 +2157,10 @@ export default function Forum({ currentUser }) {
           {gamifyProfile && (
             <div className="card gamify-card" style={{
               padding: '20px',
-              background: '#FFFFFF',
-              border: '2.5px solid #000000',
-              borderRadius: '18px',
-              boxShadow: '4px 4px 0px #000000',
+              background: 'var(--bg-card)',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-lg)',
+              boxShadow: 'var(--shadow-sm)',
               marginBottom: '24px',
               display: 'flex',
               flexDirection: 'column',
@@ -1599,29 +2171,29 @@ export default function Forum({ currentUser }) {
                   width: '48px',
                   height: '48px',
                   background: '#ffc229',
-                  border: '2px solid #000000',
-                  boxShadow: '2px 2px 0px #000000',
+                  border: 'none',
                   borderRadius: '12px',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  fontSize: '24px'
+                  fontSize: '24px',
+                  boxShadow: '0 2px 8px rgba(255, 194, 41, 0.3)'
                 }}>
                   ⚡
                 </div>
                 <div>
-                  <h4 style={{ fontWeight: '900', fontSize: '15px', color: '#1E293B', margin: 0 }}>{currentUser?.fullName}</h4>
-                  <p style={{ fontSize: '12px', color: '#64748B', fontWeight: '800', margin: '2px 0 0 0' }}>Cấp độ hiện tại: {gamifyProfile.level}</p>
+                  <h4 style={{ fontWeight: 'bold', fontSize: '15px', color: 'var(--text-main)', margin: 0 }}>{currentUser?.fullName}</h4>
+                  <p style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: '600', margin: '2px 0 0 0' }}>Cấp độ hiện tại: {gamifyProfile.level}</p>
                 </div>
               </div>
 
               {/* Progress bar */}
               <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#475569', fontWeight: '800', marginBottom: '6px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-secondary)', fontWeight: '600', marginBottom: '6px' }}>
                   <span>Tiến trình cấp độ</span>
                   <span>{gamifyProfile.xp} XP / {gamifyProfile.nextLevelXP} XP</span>
                 </div>
-                <div style={{ width: '100%', height: '12px', background: '#F1F5F9', border: '1.5px solid #000000', borderRadius: '6px', overflow: 'hidden' }}>
+                <div style={{ width: '100%', height: '10px', background: '#F1F5F9', border: 'none', borderRadius: '6px', overflow: 'hidden' }}>
                   <div style={{ width: `${gamifyProfile.progress}%`, height: '100%', background: '#6c5ce7', transition: 'width 0.4s ease' }} />
                 </div>
               </div>
@@ -1634,18 +2206,18 @@ export default function Forum({ currentUser }) {
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
-                border: '2px solid #000000',
-                boxShadow: '2px 2px 0px #000000'
+                border: '1px solid var(--border)',
+                boxShadow: 'none'
               }}>
                 <div>
-                  <span style={{ fontSize: '11px', color: '#64748B', fontWeight: '800', display: 'block' }}>Chuỗi hoạt động</span>
-                  <span style={{ fontSize: '15px', fontWeight: '900', color: '#ff9f43' }}>🔥 {gamifyProfile.streakDays || 0} Ngày liên tục</span>
+                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: '600', display: 'block' }}>Chuỗi hoạt động</span>
+                  <span style={{ fontSize: '15px', fontWeight: 'bold', color: '#ff9f43' }}>🔥 {gamifyProfile.streakDays || 0} Ngày liên tục</span>
                 </div>
               </div>
 
               {/* Badges Grid */}
               <div>
-                <h5 style={{ fontSize: '12.5px', fontWeight: '900', color: '#1E293B', marginBottom: '8px' }}>🎖️ Huy hiệu của bạn ({gamifyProfile.badges?.length || 0})</h5>
+                <h5 style={{ fontSize: '12.5px', fontWeight: 'bold', color: 'var(--text-main)', marginBottom: '8px' }}>🎖️ Huy hiệu của bạn ({gamifyProfile.badges?.length || 0})</h5>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
                   {gamifyProfile.badges && gamifyProfile.badges.length > 0 ? (
                     gamifyProfile.badges.map(b => (
@@ -1655,10 +2227,10 @@ export default function Forum({ currentUser }) {
                         style={{
                           background: '#fff3cd',
                           color: '#856404',
-                          border: '1.5px solid #000000',
+                          border: 'none',
                           fontSize: '11px',
-                          fontWeight: '800',
-                          boxShadow: '1px 1px 0px #000000'
+                          fontWeight: '600',
+                          boxShadow: 'none'
                         }}
                         title={b.description}
                       >
@@ -1666,7 +2238,7 @@ export default function Forum({ currentUser }) {
                       </span>
                     ))
                   ) : (
-                    <span style={{ fontSize: '11.5px', color: '#64748B', fontStyle: 'italic' }}>Chưa mở khóa huy hiệu nào. Hãy tham gia tích cực để nhận thưởng!</span>
+                    <span style={{ fontSize: '11.5px', color: 'var(--text-muted)', fontStyle: 'italic' }}>Chưa mở khóa huy hiệu nào. Hãy tham gia tích cực để nhận thưởng!</span>
                   )}
                 </div>
               </div>
@@ -1676,17 +2248,17 @@ export default function Forum({ currentUser }) {
           {/* Quick Guidance Card */}
           <div className="card" style={{
             padding: '20px',
-            background: '#FFFFFF',
-            border: '2.5px solid #000000',
-            borderRadius: '18px',
-            boxShadow: '4px 4px 0px #000000',
+            background: 'var(--bg-card)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-lg)',
+            boxShadow: 'var(--shadow-sm)',
             fontSize: '13px',
-            color: '#1E293B'
+            color: 'var(--text-secondary)'
           }}>
-            <h5 style={{ fontWeight: '900', color: '#1E293B', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px' }}>
+            <h5 style={{ fontWeight: 'bold', color: 'var(--text-main)', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px' }}>
               💡 Thể lệ tính điểm XP:
             </h5>
-            <ul style={{ paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px', margin: 0, fontWeight: '700', color: '#475569' }}>
+            <ul style={{ paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px', margin: 0, fontWeight: '500', color: 'var(--text-secondary)' }}>
               <li>Câu hỏi hữu ích: <span style={{ color: '#00b894' }}>+5 XP</span></li>
               <li>Lời giải được chọn: <span style={{ color: '#00b894' }}>+15 XP</span></li>
               <li>Đóng góp bình luận: <span style={{ color: '#00b894' }}>+2 XP</span></li>
@@ -1774,11 +2346,44 @@ export default function Forum({ currentUser }) {
                   </label>
                 </div>
                 <textarea 
-                  className="form-control" placeholder="Nhập nội dung chi tiết bài toán, bạn đã thử cách nào... (Hỗ trợ Ctrl+V để dán ảnh từ clipboard)"
+                  className="form-control" placeholder="Nhập nội dung chi tiết bài toán... (Kéo thả ảnh hoặc dán Ctrl+V trực tiếp vào đây)"
                   value={newContent} onChange={e => setNewContent(e.target.value)} 
-                  onPaste={(e) => handlePasteImage(e, setNewContent)}
-                  style={{ width: '100%', minHeight: '120px', resize: 'vertical' }} required
+                  onPaste={(e) => handlePasteImage(e, true)}
+                  onDragOver={(e) => { e.preventDefault(); setDragOverPost(true); }}
+                  onDragLeave={() => setDragOverPost(false)}
+                  onDrop={(e) => { setDragOverPost(false); handleDropImage(e, true); }}
+                  style={{
+                    width: '100%',
+                    minHeight: '120px',
+                    resize: 'vertical',
+                    border: dragOverPost ? '2px dashed #6c5ce7' : '2.5px solid #000000',
+                    background: dragOverPost ? '#f3f0ff' : '#FFFFFF',
+                    transition: 'all 0.15s ease'
+                  }} required
                 />
+
+                {postImages.length > 0 && (
+                  <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '10px' }}>
+                    {postImages.map((url, idx) => (
+                      <div key={idx} style={{ position: 'relative', width: '80px', height: '80px', border: '2px solid #000000', borderRadius: '8px', overflow: 'hidden' }}>
+                        <img src={url} alt="Uploaded preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        <button
+                          type="button"
+                          onClick={() => setPostImages(prev => prev.filter((_, i) => i !== idx))}
+                          style={{
+                            position: 'absolute', top: '2px', right: '2px',
+                            background: '#ff7675', color: '#fff', border: '1px solid #000',
+                            borderRadius: '50%', width: '18px', height: '18px',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            cursor: 'pointer', fontSize: '9px', fontWeight: 'bold'
+                          }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
  
               <div className="form-group">
@@ -1793,6 +2398,122 @@ export default function Forum({ currentUser }) {
                 <button type="button" className="btn-outline" onClick={() => setShowCreateModal(false)} disabled={submitting}>Hủy bỏ</button>
                 <button type="submit" className="btn-primary" disabled={submitting}>
                   {submitting ? 'Đang đăng...' : 'Đăng lên diễn đàn'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Edit Post Modal */}
+      {showEditModal && createPortal(
+        <div className="modal-backdrop" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 999 }}>
+          <div className="modal-card card" style={{ maxWidth: '600px', width: '90%', maxHeight: '90vh', overflowY: 'auto', padding: '24px', background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h3 style={{ fontSize: '17px', fontWeight: 'bold' }}>Chỉnh sửa bài viết</h3>
+              <button onClick={() => setShowEditModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px', color: 'var(--text-muted)' }}>✕</button>
+            </div>
+
+            <form onSubmit={handleEditPost} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div className="form-group">
+                <label style={{ fontSize: '12px', fontWeight: '600', marginBottom: '6px', display: 'block' }}>Chủ đề / Môn học:</label>
+                <select className="form-control" value={editCategoryId} onChange={e => setEditCategoryId(e.target.value)} style={{ width: '100%' }}>
+                  {categories.map(cat => (
+                    <option key={cat.id} value={cat.id}>{cat.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label style={{ fontSize: '12px', fontWeight: '600', marginBottom: '6px', display: 'block' }}>Dạng bài đăng:</label>
+                <select className="form-control" value={editPostType} onChange={e => setEditPostType(e.target.value)} style={{ width: '100%' }}>
+                  <option value="GENERAL">Thảo luận chung</option>
+                  <option value="QA">Hỏi & Đáp (Q&A)</option>
+                  <option value="RESOURCE">Chia sẻ tài liệu / Đề thi</option>
+                </select>
+              </div>
+
+              {editPostType === 'QA' && (
+                <div className="form-group">
+                  <label style={{ fontSize: '12px', fontWeight: '600', marginBottom: '6px', display: 'block' }}>Độ khó:</label>
+                  <select className="form-control" value={editDifficulty} onChange={e => setEditDifficulty(e.target.value)} style={{ width: '100%' }}>
+                    <option value="EASY">Dễ</option>
+                    <option value="MEDIUM">Trung bình</option>
+                    <option value="HARD">Khó</option>
+                  </select>
+                </div>
+              )}
+
+              <div className="form-group">
+                <label style={{ fontSize: '12px', fontWeight: '600', marginBottom: '6px', display: 'block' }}>Tiêu đề câu hỏi / bài thảo luận:</label>
+                <input 
+                  type="text" className="form-control" placeholder="Ví dụ: Cách bấm máy Casio nghiệm nguyên đạo hàm?"
+                  value={editTitle} onChange={e => setEditTitle(e.target.value)} style={{ width: '100%' }} required
+                />
+              </div>
+
+              <div className="form-group">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <label style={{ fontSize: '12px', fontWeight: '600', margin: 0 }}>Nội dung chi tiết câu hỏi:</label>
+                  <label className="btn-outline" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', cursor: 'pointer', padding: '4px 10px', fontSize: '11px', margin: 0 }}>
+                    📷 {uploadingImage ? 'Đang tải...' : 'Chèn ảnh'}
+                    <input 
+                      type="file" 
+                      accept="image/*" 
+                      onChange={handleUploadImageForPost} 
+                      disabled={uploadingImage} 
+                      style={{ display: 'none' }} 
+                    />
+                  </label>
+                </div>
+                <textarea 
+                  className="form-control" placeholder="Nhập nội dung chi tiết bài toán..."
+                  value={editContent} onChange={e => setEditContent(e.target.value)} 
+                  onPaste={(e) => handlePasteImage(e, false)}
+                  onDragOver={(e) => { e.preventDefault(); setDragOverPost(true); }}
+                  onDragLeave={() => setDragOverPost(false)}
+                  onDrop={(e) => { setDragOverPost(false); handleDropImage(e, false); }}
+                  style={{
+                    width: '100%',
+                    minHeight: '120px',
+                    resize: 'vertical',
+                    border: dragOverPost ? '2px dashed #6c5ce7' : '2.5px solid #000000',
+                    background: dragOverPost ? '#f3f0ff' : '#FFFFFF',
+                    transition: 'all 0.15s ease'
+                  }} required
+                />
+
+                {postImages.length > 0 && (
+                  <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '10px' }}>
+                    {postImages.map((url, idx) => (
+                      <div key={idx} style={{ position: 'relative', width: '80px', height: '80px', border: '2px solid #000000', borderRadius: '8px', overflow: 'hidden' }}>
+                        <img src={resolveImageUrl(url)} alt="Uploaded preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        <button
+                          type="button"
+                          onClick={() => setPostImages(prev => prev.filter((_, i) => i !== idx))}
+                          style={{ position: 'absolute', top: '2px', right: '2px', background: '#e74c3c', color: '#fff', border: 'none', borderRadius: '50%', width: '18px', height: '18px', fontSize: '11px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="form-group">
+                <label style={{ fontSize: '12px', fontWeight: '600', marginBottom: '6px', display: 'block' }}>Thẻ phân loại (ngăn cách bởi dấu phẩy):</label>
+                <input 
+                  type="text" className="form-control" placeholder="Ví dụ: casio, daoham, toan12"
+                  value={editTagsString} onChange={e => setEditTagsString(e.target.value)} style={{ width: '100%' }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '10px' }}>
+                <button type="button" className="btn-outline" onClick={() => setShowEditModal(false)} disabled={submitting}>Hủy bỏ</button>
+                <button type="submit" className="btn-primary" disabled={submitting}>
+                  {submitting ? 'Đang lưu...' : 'Lưu thay đổi'}
                 </button>
               </div>
             </form>

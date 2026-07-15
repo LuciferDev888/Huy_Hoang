@@ -5,6 +5,8 @@ import { prisma } from '../lib/prisma.js';
 import { addBothRevenue } from '../lib/monthlyStats.js';
 import { logSystemEvent } from '../utils/logger.js';
 import { SystemSettingService } from '../services/systemSetting.service.js';
+import { NotificationService } from '../services/notification.service.js';
+import { VoucherService } from '../services/voucher.service.js';
 
 
 const VNPAY_TMN_CODE = process.env.VNPAY_TMN_CODE || 'EDUPATH123';
@@ -13,7 +15,7 @@ const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
 
 // Generate VNPay Payment Checkout URL
 export async function createVNPayPayment(req: AuthRequest, res: Response) {
-  const { courseId } = req.body;
+  const { courseId, voucherCode } = req.body;
   const studentId = req.user?.id;
 
   if (!studentId) return res.status(401).json({ success: false, error: 'Chưa xác thực!' });
@@ -25,7 +27,25 @@ export async function createVNPayPayment(req: AuthRequest, res: Response) {
     const orderId = `EDUPATH_${Date.now()}`;
     const basePrice = course.price < 10000 ? course.price * 1000 : course.price;
     const salePrice = basePrice * (1 - (course.discount || 0) / 100);
-    const amount = Math.round(salePrice) * 100; // VNPay uses cents (x100)
+
+    let finalAmount = salePrice;
+    if (voucherCode) {
+      const valResult = await VoucherService.validateVoucher(
+        voucherCode,
+        studentId as number,
+        'COURSE',
+        Number(courseId),
+        salePrice
+      );
+      if (!valResult.isValid) {
+        return res.status(400).json({ success: false, error: (valResult as any).error });
+      }
+      finalAmount = valResult.finalPrice as number;
+      // Reserve the voucher
+      await VoucherService.reserveVoucher(voucherCode, studentId as number, 'COURSE', Number(courseId));
+    }
+
+    const amount = Math.round(finalAmount) * 100; // VNPay uses cents (x100)
     
     // Compile standard VNPay queries parameters
     const vnpParams: any = {
@@ -191,7 +211,20 @@ export async function sepayWebhook(req: any, res: Response) {
         data: { isPro: true }
       });
 
+      const txnId = id ? String(id) : `SEPAY_${Date.now()}`;
+      try {
+        await VoucherService.recordUsage(studentId, undefined, true, txnId, Number(transferAmount));
+      } catch (vErr) {
+        console.error('[Voucher Error] Lỗi ghi nhận sử dụng voucher Premium:', vErr);
+      }
+
       console.log(`[SePay Webhook] Đã nâng cấp PRO thành công cho học sinh "${user.fullName}"!`);
+
+      try {
+        await NotificationService.sendTemplate('PREMIUM_ACTIVATED', studentId, { fullName: user.fullName });
+      } catch (notifErr) {
+        console.error('[Notification Error] Failed to send PREMIUM_ACTIVATED notification:', notifErr);
+      }
 
       return res.status(200).json({
         success: true,
@@ -200,11 +233,91 @@ export async function sepayWebhook(req: any, res: Response) {
       });
     }
 
-    // 2. Check if it matches the COURSE purchase pattern: EP[studentId]C[courseId]
+    // 2. Check if it matches the DOCUMENT purchase pattern: ED[studentId]D[documentId]
+    const docMatch = cleanContent.match(/ED(\d+)D(\d+)/i);
+    if (docMatch) {
+      const studentId = parseInt(docMatch[1], 10);
+      const documentId = parseInt(docMatch[2], 10);
+
+      console.log(`[SePay Webhook] Phát hiện mã mua tài liệu: Học sinh ID: ${studentId}, Tài liệu ID: ${documentId}`);
+
+      const studentUser = await prisma.user.findUnique({
+        where: { id: studentId }
+      });
+
+      if (!studentUser) {
+        const errMsg = `Không tìm thấy học sinh mua tài liệu có ID: ${studentId}`;
+        console.error(`[SePay Webhook] ${errMsg}`);
+        return res.status(404).json({ success: false, error: errMsg });
+      }
+
+      const docResource = await prisma.documentResource.findUnique({
+        where: { id: documentId }
+      });
+
+      if (!docResource) {
+        const errMsg = `Không tìm thấy tài liệu học tập có ID: ${documentId}`;
+        console.error(`[SePay Webhook] ${errMsg}`);
+        return res.status(404).json({ success: false, error: errMsg });
+      }
+
+      // Check if already purchased
+      const existingPurchase = await prisma.documentPurchase.findUnique({
+        where: {
+          studentId_documentId: { studentId, documentId }
+        }
+      });
+
+      if (existingPurchase) {
+        console.log(`[SePay Webhook] Học sinh ${studentId} đã mua tài liệu ${documentId} từ trước.`);
+        return res.status(200).json({ success: true, message: 'Giao dịch mua tài liệu đã tồn tại.' });
+      }
+
+      // Create DocumentPurchase record
+      const txnId = id ? String(id) : `SEPAY_DOC_${Date.now()}`;
+      const docPurchase = await prisma.documentPurchase.create({
+        data: {
+          studentId,
+          documentId,
+          transactionId: txnId,
+          amount: Number(transferAmount),
+          paidAt: new Date()
+        }
+      });
+
+      // Send notifications
+      try {
+        await NotificationService.send({
+          userId: studentId,
+          title: 'Mua tài liệu thành công 📚',
+          message: `Em đã mở khóa thành công tài liệu "${docResource.title}".`,
+          category: 'PAYMENT',
+          type: 'SUCCESS'
+        });
+      } catch (notifErr) {
+        console.error('[Notification Error] Failed to send document purchase notification:', notifErr);
+      }
+
+      // Cập nhật doanh thu hàng tháng
+      try {
+        const now = new Date();
+        await addBothRevenue(Number(transferAmount), now);
+      } catch (e) {
+        console.error('[MonthlyStats] Lỗi cập nhật revenue (SePay DOC):', e);
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: 'Kích hoạt mua tài liệu thành công!',
+        data: { purchaseId: docPurchase.id }
+      });
+    }
+
+    // 3. Check if it matches the COURSE purchase pattern: EP[studentId]C[courseId]
     const match = cleanContent.match(/EP(\d+)C(\d+)/i);
 
     if (!match) {
-      console.warn(`[SePay Webhook] Không tìm thấy mã định danh EP... hoặc UP... hợp lệ trong nội dung: "${transactionContent}"`);
+      console.warn(`[SePay Webhook] Không tìm thấy mã định danh EP... hoặc UP... hoặc ED... hợp lệ trong nội dung: "${transactionContent}"`);
       await logSystemEvent(null, {
         type: 'SYSTEM',
         action: 'PAYMENT_FAILED',
@@ -300,17 +413,28 @@ export async function sepayWebhook(req: any, res: Response) {
       }
     });
 
-    // Create notification for the teacher
     try {
-      await prisma.notification.create({
-        data: {
-          userId: course.teacherId,
-          title: 'Đăng ký khóa học mới',
-          message: `Học sinh ${studentUser.fullName} đã đăng ký khóa học "${course.title}".`
-        }
+      await VoucherService.recordUsage(studentId, courseId, false, txnId, expectedAmount);
+    } catch (vErr) {
+      console.error('[Voucher Error] Lỗi ghi nhận sử dụng voucher Course:', vErr);
+    }
+
+    // Create notifications for teacher and student
+    try {
+      await NotificationService.sendTemplate('PAYMENT_SUCCESS', studentId, {
+        courseName: course.title,
+        transactionId: txnId,
+        amount: String(paidAmount)
+      });
+      await NotificationService.send({
+        userId: course.teacherId,
+        title: 'Đăng ký khóa học mới 🎓',
+        message: `Học sinh ${studentUser.fullName} đã đăng ký học khóa học "${course.title}".`,
+        category: 'COURSE',
+        type: 'SUCCESS'
       });
     } catch (notifErr) {
-      console.error('[Notification Error] Failed to create teacher notification (SePay):', notifErr);
+      console.error('[Notification Error] Failed to send PAYMENT_SUCCESS/Teacher notifications:', notifErr);
     }
 
     console.log(`[SePay Webhook] Đã kích hoạt thành công khóa học "${course.title}" cho học sinh "${studentUser.fullName}".`);
@@ -371,7 +495,7 @@ export async function checkEnrollmentStatus(req: AuthRequest, res: Response) {
 // Demo Enrollment — create a real DB enrollment without payment (POST /enrollments/demo)
 export async function createDemoEnrollment(req: AuthRequest, res: Response) {
   const studentId = req.user?.id;
-  const { courseId } = req.body;
+  const { courseId, voucherCode } = req.body;
 
   if (!studentId) return res.status(401).json({ success: false, error: 'Chưa xác thực!' });
   if (!courseId) return res.status(400).json({ success: false, error: 'Thiếu courseId!' });
@@ -399,6 +523,25 @@ export async function createDemoEnrollment(req: AuthRequest, res: Response) {
       return res.status(404).json({ success: false, error: 'Không tìm thấy khóa học!' });
     }
 
+    const basePrice = course.price < 10000 ? course.price * 1000 : course.price;
+    const salePrice = basePrice * (1 - (course.discount || 0) / 100);
+
+    let finalAmount = salePrice;
+    let valResult: any = null;
+    if (voucherCode) {
+      valResult = await VoucherService.validateVoucher(
+        voucherCode,
+        studentId as number,
+        'COURSE',
+        Number(courseId),
+        salePrice
+      );
+      if (!valResult.isValid) {
+        return res.status(400).json({ success: false, error: (valResult as any).error });
+      }
+      finalAmount = valResult.finalPrice as number;
+    }
+
     // Check if already enrolled (idempotent)
     const existing = await prisma.enrollment.findFirst({
       where: { studentId, courseId: Number(courseId) }
@@ -423,17 +566,45 @@ export async function createDemoEnrollment(req: AuthRequest, res: Response) {
       }
     });
 
-    // Create notification for the teacher
+    if (voucherCode && valResult?.isValid) {
+      try {
+        await prisma.voucherUsage.create({
+          data: {
+            userId: studentId,
+            voucherId: valResult.voucher.id,
+            paymentId: txnId,
+            discountAmount: valResult.discountAmount
+          }
+        });
+        await prisma.voucher.update({
+          where: { id: valResult.voucher.id },
+          data: {
+            usedQuantity: valResult.voucher.usedQuantity + 1
+          }
+        });
+      } catch (vErr) {
+        console.error('[Demo Voucher Error] Failed to record usage:', vErr);
+      }
+    }
+
+    // Create notifications for teacher and student (Demo)
     try {
-      await prisma.notification.create({
-        data: {
-          userId: course.teacherId,
-          title: 'Đăng ký khóa học mới',
-          message: `Học sinh ${studentUser.fullName} đã đăng ký khóa học "${course.title}".`
-        }
+      const basePrice = course.price < 10000 ? course.price * 1000 : course.price;
+      const salePrice = basePrice * (1 - (course.discount || 0) / 100);
+      await NotificationService.sendTemplate('PAYMENT_SUCCESS', studentId, {
+        courseName: course.title,
+        transactionId: txnId,
+        amount: String(Math.round(salePrice))
+      });
+      await NotificationService.send({
+        userId: course.teacherId,
+        title: 'Đăng ký khóa học mới (Demo) 🎓',
+        message: `Học sinh ${studentUser.fullName} đã đăng ký học khóa học "${course.title}" (Chế độ Demo).`,
+        category: 'COURSE',
+        type: 'SUCCESS'
       });
     } catch (notifErr) {
-      console.error('[Notification Error] Failed to create teacher notification (Demo):', notifErr);
+      console.error('[Notification Error] Failed to send demo PAYMENT_SUCCESS notifications:', notifErr);
     }
 
     console.log(`[Demo Enrollment] Đã kích hoạt khóa học ID=${courseId} cho học sinh ID=${studentId} (Demo Mode).`);
@@ -497,6 +668,196 @@ export async function getPremiumPricing(req: any, res: Response) {
       }
     });
   } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * Kiểm tra trạng thái mua tài liệu (GET /document-purchases/status?documentId=X)
+ */
+export async function checkDocumentPurchaseStatus(req: AuthRequest, res: Response) {
+  const studentId = req.user?.id;
+  const { documentId } = req.query;
+
+  if (!studentId) {
+    return res.status(401).json({ success: false, error: 'Chưa xác thực!' });
+  }
+
+  if (!documentId) {
+    return res.status(400).json({ success: false, error: 'Thiếu mã tài liệu documentId!' });
+  }
+
+  try {
+    // Nếu user là ADMIN hoặc TEACHER thì được quyền xem miễn phí
+    if (req.user?.role === 'ADMIN' || req.user?.role === 'TEACHER') {
+      return res.status(200).json({
+        success: true,
+        data: { isPurchased: true }
+      });
+    }
+
+    const doc = await prisma.documentResource.findUnique({
+      where: { id: Number(documentId) }
+    });
+
+    if (!doc) {
+      return res.status(404).json({ success: false, error: 'Không tìm thấy tài liệu!' });
+    }
+
+    // Nếu tài liệu miễn phí thì ai cũng được xem
+    if (doc.isFree) {
+      return res.status(200).json({
+        success: true,
+        data: { isPurchased: true }
+      });
+    }
+
+    const purchase = await prisma.documentPurchase.findUnique({
+      where: {
+        studentId_documentId: {
+          studentId: Number(studentId),
+          documentId: Number(documentId)
+        }
+      }
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        isPurchased: !!purchase,
+        purchase: purchase
+      }
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * Tạo URL thanh toán VNPay cho tài liệu (POST /document-purchases)
+ */
+export async function createDocumentVNPayPayment(req: AuthRequest, res: Response) {
+  const { documentId } = req.body;
+  const studentId = req.user?.id;
+
+  if (!studentId) return res.status(401).json({ success: false, error: 'Chưa xác thực!' });
+  if (!documentId) return res.status(400).json({ success: false, error: 'Thiếu mã tài liệu documentId!' });
+
+  try {
+    const doc = await prisma.documentResource.findUnique({ where: { id: Number(documentId) } });
+    if (!doc) return res.status(404).json({ success: false, error: 'Không tìm thấy tài liệu!' });
+
+    const orderId = `ED_DOC_${Date.now()}`;
+    const basePrice = doc.price;
+    const amount = Math.round(basePrice) * 100; // VNPay uses cents (x100)
+
+    const vnpParams: any = {
+      vnp_Version: '2.1.0',
+      vnp_Command: 'pay',
+      vnp_TmnCode: VNPAY_TMN_CODE,
+      vnp_Amount: String(amount),
+      vnp_CreateDate: new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14),
+      vnp_CurrCode: 'VND',
+      vnp_IpAddr: '127.0.0.1',
+      vnp_Locale: 'vn',
+      vnp_OrderInfo: `Thanh toan tai lieu: ${doc.title}`,
+      vnp_OrderType: 'other',
+      vnp_ReturnUrl: `${CLIENT_URL}/exam-bank`,
+      vnp_TxnRef: orderId
+    };
+
+    const sortedKeys = Object.keys(vnpParams).sort();
+    const signData = sortedKeys
+      .map(key => `${key}=${encodeURIComponent(vnpParams[key])}`)
+      .join('&');
+
+    const hmac = crypto.createHmac('sha512', VNPAY_HASH_SECRET);
+    const secureHash = hmac.update(Buffer.from(signData, 'utf-8')).digest('hex');
+
+    const vnpayUrl = `https://sandbox.vnpayment.vn/paymentv2/vpcpay.html?${signData}&vnp_SecureHash=${secureHash}`;
+
+    return res.status(200).json({ success: true, data: { paymentUrl: vnpayUrl } });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * Mô phỏng mua tài liệu chế độ Demo (POST /document-purchases/demo)
+ */
+export async function createDocumentDemoPurchase(req: AuthRequest, res: Response) {
+  const studentId = req.user?.id;
+  const { documentId } = req.body;
+
+  if (!studentId) return res.status(401).json({ success: false, error: 'Chưa xác thực!' });
+  if (!documentId) return res.status(400).json({ success: false, error: 'Thiếu mã tài liệu documentId!' });
+
+  try {
+    const studentUser = await prisma.user.findUnique({
+      where: { id: studentId }
+    });
+
+    if (!studentUser) {
+      return res.status(404).json({ success: false, error: 'Không tìm thấy người dùng!' });
+    }
+
+    const doc = await prisma.documentResource.findUnique({ where: { id: Number(documentId) } });
+    if (!doc) {
+      return res.status(404).json({ success: false, error: 'Không tìm thấy tài liệu!' });
+    }
+
+    // Check if already purchased
+    const existing = await prisma.documentPurchase.findUnique({
+      where: {
+        studentId_documentId: { studentId, documentId: Number(documentId) }
+      }
+    });
+
+    if (existing) {
+      return res.status(200).json({
+        success: true,
+        data: { purchaseId: existing.id, documentId: Number(documentId), alreadyPurchased: true }
+      });
+    }
+
+    const txnId = `DEMO_DOC_${studentId}_${documentId}_${Date.now()}`;
+    const docPurchase = await prisma.documentPurchase.create({
+      data: {
+        studentId,
+        documentId: Number(documentId),
+        transactionId: txnId,
+        amount: doc.price,
+        paidAt: new Date()
+      }
+    });
+
+    // Send notifications
+    try {
+      await NotificationService.send({
+        userId: studentId,
+        title: 'Mua tài liệu thành công (Demo) 📚',
+        message: `Em đã mở khóa thành công tài liệu "${doc.title}" (Chế độ Demo).`,
+        category: 'PAYMENT',
+        type: 'SUCCESS'
+      });
+    } catch (notifErr) {
+      console.error('[Notification Error] Failed to send demo document notification:', notifErr);
+    }
+
+    // Cập nhật doanh thu hàng tháng
+    try {
+      const now = new Date();
+      await addBothRevenue(doc.price, now);
+    } catch (e) {
+      console.error('[MonthlyStats] Lỗi cập nhật revenue (Demo DOC):', e);
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: { purchaseId: docPurchase.id, documentId: Number(documentId), transactionId: txnId }
+    });
+  } catch (err: any) {
+    console.error('[Demo Document Purchase Error]', err);
     return res.status(500).json({ success: false, error: err.message });
   }
 }

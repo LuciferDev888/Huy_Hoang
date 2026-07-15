@@ -92,7 +92,7 @@ async function request(path, options = {}) {
     err.data = data.data || null;
     throw err;
   }
-  return data.data;
+  return data.data !== undefined ? data.data : data;
 }
 
 export const api = {
@@ -100,6 +100,10 @@ export const api = {
     const formData = new FormData();
     formData.append('file', file);
     return request('/upload', { method: 'POST', body: formData });
+  },
+
+  deleteUploadedFile: (url) => {
+    return request('/upload/delete', { method: 'POST', body: { url } });
   },
 
   login: (email, password) =>
@@ -147,7 +151,16 @@ export const api = {
     return request(`/courses?${params}`);
   },
 
+  aiSearchCourses: (query) =>
+    request('/courses/ai-search', { method: 'POST', body: { query } }),
+
   getCourseById: (id) => request(`/courses/${id}`),
+
+  createCourseReview: (id, rating, comment) =>
+    request(`/courses/${id}/reviews`, {
+      method: 'POST',
+      body: { rating, comment }
+    }),
 
   createCourse: (payload) => request('/courses', { method: 'POST', body: payload }),
   updateCourse: (id, payload) => request(`/courses/${id}`, { method: 'PUT', body: payload }),
@@ -229,7 +242,16 @@ export const api = {
 
   checkEnrollmentStatus: (courseId) => request(`/enrollments/status?courseId=${courseId}`),
 
-  enrollCourseDemo: (courseId) => request('/enrollments/demo', { method: 'POST', body: { courseId } }),
+  enrollCourseDemo: (payload) => {
+    const body = typeof payload === 'object' ? payload : { courseId: payload };
+    return request('/enrollments/demo', { method: 'POST', body });
+  },
+
+  createDocumentVNPayPayment: (documentId) => request('/document-purchases', { method: 'POST', body: { documentId } }),
+
+  checkDocumentPurchaseStatus: (documentId) => request(`/document-purchases/status?documentId=${documentId}`),
+
+  purchaseDocumentDemo: (documentId) => request('/document-purchases/demo', { method: 'POST', body: { documentId } }),
 
   checkProStatus: () => request('/users/pro-status'),
 
@@ -271,17 +293,26 @@ export const api = {
   deleteForumPost: (id) =>
     request(`/forum/posts/${id}`, { method: 'DELETE' }),
 
+  updateForumPost: (id, postData) =>
+    request(`/forum/posts/${id}`, { method: 'PUT', body: postData }),
+
   togglePinForumPost: (id) =>
     request(`/forum/posts/${id}/pin`, { method: 'PUT' }),
 
   reactForumPost: (id, type) =>
     request(`/forum/posts/${id}/react`, { method: 'POST', body: { type } }),
 
+  toggleSaveForumPost: (id) =>
+    request(`/forum/posts/${id}/save`, { method: 'POST' }),
+
   getForumComments: (postId) =>
     request(`/forum/posts/${postId}/comments`, { method: 'GET' }),
 
   createForumComment: (postId, content, parentId = null) =>
     request(`/forum/posts/${postId}/comments`, { method: 'POST', body: { content, parentId } }),
+
+  reactForumComment: (id, type) =>
+    request(`/forum/comments/${id}/react`, { method: 'POST', body: { type } }),
 
   acceptCommentSolution: (id) =>
     request(`/forum/comments/${id}/accept`, { method: 'PUT' }),
@@ -297,6 +328,9 @@ export const api = {
 
   leaveStudyGroup: (id) =>
     request(`/forum/study-groups/${id}/leave`, { method: 'POST' }),
+
+  deleteStudyGroup: (id) =>
+    request(`/forum/study-groups/${id}`, { method: 'DELETE' }),
 
   getForumLeaderboard: () =>
     request('/forum/leaderboard', { method: 'GET' }),
@@ -355,6 +389,18 @@ export const api = {
       method: 'POST',
       body: { text },
     }),
+
+  generateFlashcardMnemonic: (front, back) =>
+    request('/ai/flashcards/mnemonic', {
+      method: 'POST',
+      body: { front, back },
+    }),
+
+  generateFlashcardsOCR: (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return request('/ai/flashcards/ocr', { method: 'POST', body: formData });
+  },
 
   saveMindmap: (title, content, id = null) =>
     request('/mindmaps', {
@@ -420,10 +466,10 @@ export const api = {
     return request(url);
   },
 
-  generateNodeQuiz: (mindmapId, nodeKey) =>
+  generateNodeQuiz: (mindmapId, nodeKey, refresh = false) =>
     request('/ai/mindmap/quiz', {
       method: 'POST',
-      body: { mindmapId, nodeKey }
+      body: { mindmapId, nodeKey, refresh }
     }),
 
   submitNodeQuiz: (mindmapId, nodeKey, answers, completionTime) =>
@@ -495,9 +541,16 @@ export const api = {
   downloadMaterial: (id) => request(`/materials/${id}/download`, { method: 'POST' }),
 
   // ADMIN MATERIALS MODERATION
+  getAdminMaterials: () => request('/admin/materials'),
   getAdminPendingMaterials: () => request('/admin/materials/pending'),
-  approveMaterial: (id) => request(`/admin/materials/${id}/approve`, { method: 'POST' }),
-  rejectMaterial: (id) => request(`/admin/materials/${id}/reject`, { method: 'POST' }),
+  approveMaterial: (id) => request(`/admin/materials/${id}/approve`, { method: 'PATCH' }),
+  rejectMaterial: (id, reason) => request(`/admin/materials/${id}/reject`, { method: 'PATCH', body: { reason } }),
+  hideMaterial: (id) => request(`/admin/materials/${id}/hide`, { method: 'PATCH' }),
+
+  // DOCUMENT RATINGS AND REVIEWS
+  getDocumentRatings: (id) => request(`/document-resources/${id}/ratings`),
+  submitDocumentRating: (id, rating, comment) => request(`/document-resources/${id}/rating`, { method: 'POST', body: { rating, comment } }),
+  hideDocumentRating: (id, reason, isHidden = true) => request(`/ratings/${id}/hide`, { method: 'PATCH', body: { reason, isHidden } }),
 
   getTeacherStats: () => request('/teacher/stats'),
 
@@ -536,6 +589,22 @@ export const api = {
   hideCourse: (id, reason) => request(`/admin/courses/${id}/hide`, { method: 'PATCH', body: { reason } }),
   showCourse: (id) => request(`/admin/courses/${id}/show`, { method: 'PATCH' }),
 
+  // ADMIN EXAM MANAGEMENT
+  getAdminTests: (params = {}) => {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '') {
+        query.append(k, String(v));
+      }
+    });
+    return request('/admin/tests?' + query.toString());
+  },
+  getAdminTestById: (id) => request(`/admin/tests/${id}`),
+  approveTest: (id) => request(`/admin/tests/${id}/approve`, { method: 'PUT' }),
+  rejectTest: (id, reason) => request(`/admin/tests/${id}/reject`, { method: 'PUT', body: { reason } }),
+  hideTest: (id, reason) => request(`/admin/tests/${id}/hide`, { method: 'PUT', body: { reason } }),
+  showTest: (id) => request(`/admin/tests/${id}/show`, { method: 'PUT' }),
+
   getUserDocuments: () => request('/user-documents', { method: 'GET' }),
   createUserDocument: (title, fileUrl, fileType) => request('/user-documents', { method: 'POST', body: { title, fileUrl, fileType } }),
   deleteUserDocument: (id) => request(`/user-documents/${id}`, { method: 'DELETE' }),
@@ -558,7 +627,81 @@ export const api = {
   getAttendanceHistory: (startDate, endDate) => request(`/gamification/attendance?startDate=${startDate}&endDate=${endDate}`),
   
   getAdminSystemSettings: () => request('/admin/system-settings', { method: 'GET' }),
-  updateAdminSystemSettings: (settings) => request('/admin/system-settings', { method: 'PUT', body: { settings } })
+  updateAdminSystemSettings: (settings) => request('/admin/system-settings', { method: 'PUT', body: { settings } }),
+
+  // Notification API Methods
+  getNotifications: (params = {}) => {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '') {
+        query.append(k, String(v));
+      }
+    });
+    return request('/notifications?' + query.toString());
+  },
+  getUnreadNotificationsCount: () => request('/notifications/unread-count'),
+  markNotificationAsRead: (id) => request(`/notifications/${id}/read`, { method: 'PUT' }),
+  markAllNotificationsAsRead: () => request('/notifications/read-all', { method: 'PUT' }),
+  deleteNotification: (id) => request(`/notifications/${id}`, { method: 'DELETE' }),
+  deleteAllReadNotifications: () => request('/notifications/all-read', { method: 'DELETE' }),
+
+  // Admin Notification management
+  adminSendNotification: (data) => request('/notifications/admin/send', { method: 'POST', body: data }),
+  adminGetSentNotifications: (params = {}) => {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '') {
+        query.append(k, String(v));
+      }
+    });
+    return request('/notifications/admin/history?' + query.toString());
+  },
+  adminGetTemplates: () => request('/notifications/admin/templates'),
+  adminCreateTemplate: (data) => request('/notifications/admin/templates', { method: 'POST', body: data }),
+  adminUpdateTemplate: (id, data) => request(`/notifications/admin/templates/${id}`, { method: 'PUT', body: data }),
+  adminDeleteTemplate: (id) => request(`/notifications/admin/templates/${id}`, { method: 'DELETE' }),
+
+  // Voucher Management APIs
+  getAdminVouchers: (params = {}) => {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '') {
+        query.append(k, String(v));
+      }
+    });
+    return request('/admin/vouchers?' + query.toString());
+  },
+  getAdminVoucherById: (id) => request(`/admin/vouchers/${id}`),
+  createAdminVoucher: (data) => request('/admin/vouchers', { method: 'POST', body: data }),
+  updateAdminVoucher: (id, data) => request(`/admin/vouchers/${id}`, { method: 'PUT', body: data }),
+  deleteAdminVoucher: (id) => request(`/admin/vouchers/${id}`, { method: 'DELETE' }),
+  enableAdminVoucher: (id) => request(`/admin/vouchers/${id}/enable`, { method: 'PUT' }),
+  disableAdminVoucher: (id) => request(`/admin/vouchers/${id}/disable`, { method: 'PUT' }),
+  validateVoucher: (data) => request('/enrollments/validate-voucher', { method: 'POST', body: data }),
+  reserveVoucher: (data) => request('/enrollments/reserve-voucher', { method: 'POST', body: data }),
+
+  // Announcement Popup APIs
+  getAdminAnnouncements: (params = {}) => {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '') {
+        query.append(k, String(v));
+      }
+    });
+    return request('/admin/announcements?' + query.toString());
+  },
+  getAdminAnnouncementById: (id) => request(`/admin/announcements/${id}`),
+  createAdminAnnouncement: (data) => request('/admin/announcements', { method: 'POST', body: data }),
+  updateAdminAnnouncement: (id, data) => request(`/admin/announcements/${id}`, { method: 'PUT', body: data }),
+  deleteAdminAnnouncement: (id) => request(`/admin/announcements/${id}`, { method: 'DELETE' }),
+  updateAdminAnnouncementStatus: (id, status) => request(`/admin/announcements/${id}/status`, { method: 'PATCH', body: { status } }),
+  getActiveAnnouncement: (role = '', page = '') => {
+    const query = new URLSearchParams();
+    if (role) query.append('role', role);
+    if (page) query.append('page', page);
+    const qStr = query.toString();
+    return request('/announcements/active' + (qStr ? `?${qStr}` : ''));
+  }
 };
 
 
